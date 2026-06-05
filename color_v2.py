@@ -416,7 +416,7 @@ if __name__ == '__main__':
             mtx = dist = None   # 불일치 시 보정 비활성화
 
         # 라이브 탐지 테스트 모드
-        cap = cv2.VideoCapture(0)  # 라즈베리파이는 CAP_V4L2 사용
+        cap = cv2.VideoCapture(0)  # 라즈베리파이: CAP_V4L2 사용 (인덱스 0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
 
