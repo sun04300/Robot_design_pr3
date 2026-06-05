@@ -21,6 +21,9 @@ import datetime
 import pickle
 import os
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
+
 
 # ────────────────────────────────────────────────────
 #  HSV 범위 상수 (실제 환경 측정값 기반)
@@ -60,7 +63,7 @@ _K9 = np.ones((9, 9), np.uint8)
 #  캘리브레이션 로드 헬퍼
 # ────────────────────────────────────────────────────
 
-def load_calibration(pkl_path: str = 'camera_calibration.pkl'):
+def load_calibration(pkl_path: str = _DEFAULT_CALIB):
     """
     cali.py 가 생성한 camera_calibration.pkl 을 읽어
     (camera_matrix, dist_coeffs, calib_resolution) 을 반환.
@@ -402,7 +405,7 @@ if __name__ == '__main__':
         # ── 캘리브레이션 파일 로드 ────────────────────────────
         # camera_calibration.pkl 이 없어도 동작하지만
         # 있으면 렌즈 왜곡 보정이 자동으로 활성화됨
-        CALIB_PATH = 'camera_calibration.pkl'
+        CALIB_PATH = _DEFAULT_CALIB
         mtx, dist, calib_res = load_calibration(CALIB_PATH)
 
         FRAME_W, FRAME_H = 640, 480
