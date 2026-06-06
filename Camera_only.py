@@ -63,7 +63,8 @@ SPEED_FAR       = 0.55        # 정상 접근 속도 (먼 거리)
 SPEED_NEAR      = 0.35        # 감속 속도 (가까운 거리)
 DIST_SLOW_MM    = 100.0       # 감속 시작 거리 (mm)
 ALIGN_THRES_MM  = 50.0        # 도달 판정 X 허용 오차 (mm)
-CLOSE_AREA_RATIO = 0.25       # 화면 점유율 이상이면 근접 도달로 판정 (PnP 불안 구간 보완)
+AREA_PEAK_THRES  = 0.25       # 색지 면적이 이 이상 → "접근 확인" 플래그 ON
+AREA_DROP_THRES  = 0.15       # 접근 확인 후 이 이하로 급감 → 색지 위 도달 판정
 STEER_GAIN      = 0.015       # angle(deg) → steer 변환 게인
 CONFIRM_FRAMES  = 4           # 도달 연속 N 프레임 충족 시 확정
 STOP_DURATION   = 1.0         # 정지 유지 시간 (초)
@@ -272,6 +273,7 @@ def main():
     stop_start    = None
     last_seen     = time.time()
     last_steer    = 0.0          # 마지막 조향 방향 (탐색 시 초기 방향 결정)
+    area_peak_seen = False       # AREA_PEAK_THRES 이상을 한 번이라도 봤는지
 
     print("=" * 60)
     print("  카메라 색상 추적 주행  |  SolvePnP + Arc Search")
@@ -318,6 +320,7 @@ def main():
                     target_idx   += 1
                     state         = 'SEEK'
                     on_zone_count = 0
+                    area_peak_seen = False
                     last_seen     = time.time()
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
@@ -342,26 +345,29 @@ def main():
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist)
 
             area_r = det['area'] / (fw * fh)
+            if area_r > AREA_PEAK_THRES:
+                area_peak_seen = True
+            area_reached = area_peak_seen and (area_r < AREA_DROP_THRES)
+
             if pose is not None:
                 z_mm, x_mm, steer, quad_pts = pose   # quad_pts 재사용 — _extract_quad 이중 호출 방지
                 pnp_reached  = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
-                area_reached = area_r > CLOSE_AREA_RATIO   # 근접 시 PnP 불안정 보완
                 reached = pnp_reached or area_reached
                 speed   = SPEED_NEAR if z_mm < DIST_SLOW_MM else SPEED_FAR
                 log_msg = f"PnP z={z_mm:.0f}mm x={x_mm:+.0f}mm area={area_r:.2f}"
                 pnp_col = (0, 255, 0) if reached else (0, 220, 255)
-                cv2.putText(vis, f"Z={z_mm:.0f}mm  X={x_mm:+.0f}mm  A={area_r:.3f}",
-                            (fw // 2 - 140, 38),
+                cv2.putText(vis, f"Z={z_mm:.0f}mm  X={x_mm:+.0f}mm  A={area_r:.3f} pk={'Y' if area_peak_seen else 'N'}",
+                            (fw // 2 - 160, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.70, pnp_col, 2)
                 cv2.polylines(vis, [quad_pts.astype(np.int32)], True, pnp_col, 2)
             else:
                 offset  = det['offset']
                 steer   = float(np.clip(offset * 0.80, -MAX_STEER, MAX_STEER))
-                speed   = SPEED_NEAR if area_r > 0.08 else SPEED_FAR
-                reached = area_r > CLOSE_AREA_RATIO
+                speed   = SPEED_NEAR if area_r > AREA_DROP_THRES else SPEED_FAR
+                reached = area_reached
                 log_msg = f"fallback offset={offset:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"area={area_r:.3f}",
-                            (fw // 2 - 60, 38),
+                cv2.putText(vis, f"area={area_r:.3f} pk={'Y' if area_peak_seen else 'N'}",
+                            (fw // 2 - 80, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.70, (200, 200, 200), 2)
 
             last_steer    = steer
