@@ -27,6 +27,8 @@
 
 import os
 import atexit
+import signal
+import sys
 import serial
 import time
 import cv2
@@ -59,17 +61,18 @@ WHEEL_AXLE_DIST_MM = 60.0  # 카메라 정사영 ~ 뒷바퀴 축 전방 거리 (
 MAX_STEER       = 1.0
 SPEED_FAR       = 0.55        # 정상 접근 속도 (먼 거리)
 SPEED_NEAR      = 0.35        # 감속 속도 (가까운 거리)
-DIST_SLOW_MM    = 400.0       # 감속 시작 거리 (mm)
-ALIGN_THRES_MM  = 30.0        # 도달 판정 X 허용 오차 (mm)
+DIST_SLOW_MM    = 100.0       # 감속 시작 거리 (mm)
+ALIGN_THRES_MM  = 50.0        # 도달 판정 X 허용 오차 (mm)
+CLOSE_AREA_RATIO = 0.25       # 화면 점유율 이상이면 근접 도달로 판정 (PnP 불안 구간 보완)
 STEER_GAIN      = 0.015       # angle(deg) → steer 변환 게인
-CONFIRM_FRAMES  = 8           # 도달 연속 N 프레임 충족 시 확정
+CONFIRM_FRAMES  = 4           # 도달 연속 N 프레임 충족 시 확정
 STOP_DURATION   = 1.0         # 정지 유지 시간 (초)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  탐색(SEARCH) 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
 WEAK_MIN_AREA      = 200      # 약탐지 최소 면적 (px) — 이 이상이면 방향 유도
-WEAK_SPEED         = 0.25     # 약탐지 시 전진 속도
+WEAK_SPEED         = 0.35     # 약탐지 시 전진 속도
 WEAK_STEER_GAIN    = 0.60     # 약탐지 시 offset → steer 게인
 
 SEARCH_TIMEOUT     = 1.5      # 미탐지 후 호회전 탐색 시작까지 대기 (초)
@@ -255,6 +258,14 @@ def main():
             pass
     atexit.register(_cleanup)
 
+    def _sig_handler(_sig, _frame):
+        _cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT,  _sig_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, _sig_handler)   # kill
+    signal.signal(signal.SIGTSTP, _sig_handler)   # Ctrl+Z
+
     target_idx    = 0
     state         = 'SEEK'
     on_zone_count = 0
@@ -327,30 +338,34 @@ def main():
         if det.get('found'):
             last_seen = time.time()
             cnt = det['contour']
-            cy  = det['cy']
 
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist)
 
+            area_r = det['area'] / (fw * fh)
             if pose is not None:
                 z_mm, x_mm, steer, quad_pts = pose   # quad_pts 재사용 — _extract_quad 이중 호출 방지
-                reached = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
+                pnp_reached  = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
+                area_reached = area_r > CLOSE_AREA_RATIO   # 근접 시 PnP 불안정 보완
+                reached = pnp_reached or area_reached
                 speed   = SPEED_NEAR if z_mm < DIST_SLOW_MM else SPEED_FAR
-                log_msg = f"PnP z={z_mm:.0f}mm x={x_mm:+.0f}mm"
+                log_msg = f"PnP z={z_mm:.0f}mm x={x_mm:+.0f}mm area={area_r:.2f}"
                 pnp_col = (0, 255, 0) if reached else (0, 220, 255)
-                cv2.putText(vis, f"Z={z_mm:.0f}mm  X={x_mm:+.0f}mm",
-                            (fw // 2 - 100, 38),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, pnp_col, 2)
+                cv2.putText(vis, f"Z={z_mm:.0f}mm  X={x_mm:+.0f}mm  A={area_r:.3f}",
+                            (fw // 2 - 140, 38),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.70, pnp_col, 2)
                 cv2.polylines(vis, [quad_pts.astype(np.int32)], True, pnp_col, 2)
             else:
                 offset  = det['offset']
                 steer   = float(np.clip(offset * 0.80, -MAX_STEER, MAX_STEER))
-                area_r  = det['area'] / (fw * fh)
                 speed   = SPEED_NEAR if area_r > 0.08 else SPEED_FAR
-                reached = (cy is not None and cy > fh * 0.75) and (abs(offset) < 0.30)
-                log_msg = f"fallback offset={offset:+.2f}"
+                reached = area_r > CLOSE_AREA_RATIO
+                log_msg = f"fallback offset={offset:+.2f} area={area_r:.2f}"
+                cv2.putText(vis, f"area={area_r:.3f}",
+                            (fw // 2 - 60, 38),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.70, (200, 200, 200), 2)
 
             last_steer    = steer
-            on_zone_count = on_zone_count + 1 if reached else max(0, on_zone_count - 2)
+            on_zone_count = on_zone_count + 1 if reached else max(0, on_zone_count - 1)
 
             if on_zone_count >= CONFIRM_FRAMES:
                 state = 'STOP'; stop_start = time.time()
