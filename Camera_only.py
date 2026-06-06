@@ -63,9 +63,7 @@ SPEED_FAR       = 0.55        # 정상 접근 속도 (먼 거리)
 SPEED_NEAR      = 0.35        # 감속 속도 (가까운 거리)
 DIST_SLOW_MM    = 100.0       # 감속 시작 거리 (mm)
 ALIGN_THRES_MM  = 50.0        # 도달 판정 X 허용 오차 (mm)
-AREA_PEAK_THRES  = 0.18       # 색지 면적이 이 이상 → 피크 추적 시작 (회전 색지도 포함)
-AREA_DROP_RATIO  = 0.40       # 피크 대비 이 비율 이하로 급감 → 색지 위 도달 판정
-                               # 예: 피크=0.28 → 0.28*0.40=0.112 이하이면 정지
+AREA_PEAK_THRES  = 0.18       # 색지 면적이 이 이상 → 피크 확인 플래그 ON (회전 색지도 포함)
 STEER_GAIN      = 0.015       # angle(deg) → steer 변환 게인
 CONFIRM_FRAMES  = 4           # 도달 연속 N 프레임 충족 시 확정
 STOP_DURATION   = 1.0         # 정지 유지 시간 (초)
@@ -342,35 +340,34 @@ def main():
                 det = {'found': False}   # 바닥 매트 아닌 것으로 판단 → 무시
 
         if det.get('found'):
+            # ── ① 강탐지: 색지 보임 → 접근 주행 ─────────────────────────
             last_seen = time.time()
             cnt = det['contour']
-
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist)
 
             area_r = det['area'] / (fw * fh)
             if area_r > AREA_PEAK_THRES:
                 area_peak_seen = True
                 peak_area_r = max(peak_area_r, area_r)
-            area_reached = area_peak_seen and (area_r < peak_area_r * AREA_DROP_RATIO)
 
             if pose is not None:
-                z_mm, x_mm, steer, quad_pts = pose   # quad_pts 재사용 — _extract_quad 이중 호출 방지
-                pnp_reached  = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
-                reached = pnp_reached or area_reached
+                z_mm, x_mm, steer, quad_pts = pose
+                pnp_reached = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
+                reached = pnp_reached
                 speed   = SPEED_NEAR if z_mm < DIST_SLOW_MM else SPEED_FAR
                 log_msg = f"PnP z={z_mm:.0f}mm x={x_mm:+.0f}mm area={area_r:.2f}"
                 pnp_col = (0, 255, 0) if reached else (0, 220, 255)
-                cv2.putText(vis, f"Z={z_mm:.0f}mm X={x_mm:+.0f}mm A={area_r:.3f}/pk={peak_area_r:.3f}",
-                            (fw // 2 - 160, 38),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.70, pnp_col, 2)
+                cv2.putText(vis, f"Z={z_mm:.0f}mm X={x_mm:+.0f}mm A={area_r:.3f} pk={peak_area_r:.3f}",
+                            (fw // 2 - 170, 38),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, pnp_col, 2)
                 cv2.polylines(vis, [quad_pts.astype(np.int32)], True, pnp_col, 2)
             else:
                 offset  = det['offset']
                 steer   = float(np.clip(offset * 0.80, -MAX_STEER, MAX_STEER))
                 speed   = SPEED_NEAR if area_peak_seen else SPEED_FAR
-                reached = area_reached
+                reached = False
                 log_msg = f"fallback offset={offset:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"area={area_r:.3f}/pk={peak_area_r:.3f}",
+                cv2.putText(vis, f"area={area_r:.3f} pk={peak_area_r:.3f}",
                             (fw // 2 - 80, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.70, (200, 200, 200), 2)
 
@@ -380,16 +377,47 @@ def main():
             if on_zone_count >= CONFIRM_FRAMES:
                 state = 'STOP'; stop_start = time.time()
                 ser.write(b"S\n")
-                print(f"  🎯 {color.upper()} 도달! {log_msg}")
+                print(f"  🎯 {color.upper()} 도달(PnP)! {log_msg}")
                 cv2.imshow('Robot View', vis); cv2.waitKey(1)
                 continue
 
             ser.write(f"F {steer:.2f} {speed:.2f}\n".encode())
             print(f"  [SEEK] {color.upper()} {log_msg} steer={steer:+.2f} cnt={on_zone_count}")
 
+        elif area_peak_seen:
+            # ── ② 피크 후 미탐지: 색지가 카메라 아래로 들어간 상황 ────────
+            hsv_u    = cv2.cvtColor(result['undistorted'], cv2.COLOR_BGR2HSV)
+            weak_cnt = get_weak_contour(hsv_u, color, fh)
+
+            if weak_cnt is not None:
+                # 아직 약하게 보임 → 마저 진입하도록 계속 유도
+                weak_offset = _contour_offset(weak_cnt, fw)
+                steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
+                                            -MAX_STEER, MAX_STEER))
+                last_steer  = steer
+                last_seen   = time.time()
+                ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
+                cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
+                cv2.putText(vis, f"ENTERING {color.upper()} off={weak_offset:+.2f}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 255, 0), 2)
+                print(f"  [ENTER] {color.upper()} offset={weak_offset:+.2f} steer={steer:+.2f}")
+            else:
+                # 완전히 사라짐 → 양쪽 바퀴 모두 색지 위
+                on_zone_count += 1
+                ser.write(b"S\n")
+                log_msg = f"invisible after pk={peak_area_r:.2f}"
+                cv2.putText(vis, f"ON PAPER  cnt:{on_zone_count}/{CONFIRM_FRAMES}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+                print(f"  [ON] {color.upper()} {log_msg} cnt={on_zone_count}")
+                if on_zone_count >= CONFIRM_FRAMES:
+                    state = 'STOP'; stop_start = time.time()
+                    ser.write(b"S\n")
+                    print(f"  🎯 {color.upper()} 도달(invisible)! {log_msg}")
+                    cv2.imshow('Robot View', vis); cv2.waitKey(1)
+                    continue
+
         else:
-            # ── ② 약탐지: 강탐지 실패 시 낮은 임계값으로 재탐지 ──────────
-            # hsv_u는 강탐지 실패 시에만 필요 → 여기서 지연 계산
+            # ── ③ 미탐지 (아직 색지 미발견) → 약탐지 후 호회전 탐색 ───────
             on_zone_count = max(0, on_zone_count - 1)
             hsv_u    = cv2.cvtColor(result['undistorted'], cv2.COLOR_BGR2HSV)
             weak_cnt = get_weak_contour(hsv_u, color, fh)
@@ -400,9 +428,8 @@ def main():
                 steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
                                             -MAX_STEER, MAX_STEER))
                 last_steer  = steer
-                last_seen   = time.time()   # 탐색 타이머 리셋
+                last_seen   = time.time()
                 ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
-                # 약탐지 윤곽 표시 (점선 효과: 1px 선)
                 cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
                 cv2.putText(vis, f"WEAK {color.upper()} off={weak_offset:+.2f}",
                             (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 0), 2)
@@ -410,17 +437,15 @@ def main():
                       f"gentle steer={steer:+.2f}")
 
             else:
-                # ── ③ 완전 미탐지 → 호회전(arc) 탐색 ───────────────────
+                # ── 완전 미탐지 → 호회전(arc) 탐색 ─────────────────────
                 elapsed = time.time() - last_seen
 
                 if elapsed < SEARCH_TIMEOUT:
-                    # 잠깐의 미탐지는 그대로 정지 (흔들림 방지)
                     ser.write(b"S\n")
                     cv2.putText(vis, f"WAIT {elapsed:.1f}s",
                                 (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.55, (100, 100, 255), 2)
                 else:
-                    # 호회전 탐색 (전진 + 느린 조향으로 시야를 천천히 스위프)
                     t_search = elapsed - SEARCH_TIMEOUT
                     base_dir = 1.0 if last_steer >= 0 else -1.0
                     arc_steer = search_arc_steer(t_search, base_dir)
