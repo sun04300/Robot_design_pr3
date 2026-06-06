@@ -32,24 +32,23 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 
 # RED: 핑크-마젠타 계열이므로 H 155~179 + H 0~8 두 범위 합산 필수
 RED_LOWER1  = np.array([  0, 100,  80])  # 순수 빨강 (H 저주파 끝)
-RED_UPPER1  = np.array([  8, 255, 255])  # V상한 230→255 (밝은 환경 대응)
-RED_LOWER2  = np.array([155,  80,  80])  # 핑크-마젠타 (H 고주파 끝)
-RED_UPPER2  = np.array([179, 255, 255])  # V상한 230→255
+RED_UPPER1  = np.array([ 10, 255, 255])
+RED_LOWER2  = np.array([150,  70,  80])  # 핑크-마젠타 (H 고주파 끝)
+RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: 갈색 박스 오인식 방지를 위해 V하한 상향 + H상한 하향
-#  [측정 근거] 노란종이 V=160~239 vs 갈색박스 V=93~149 → V하한 150으로 분리
-#             갈색박스 모서리 반사가 H=29(주황)로 새는 것을 H상한 28로 차단
-#  (이전: LOWER[18,100,100] UPPER[30,255,255] → 갈색박스 다수 통과)
-YELLOW_LOWER = np.array([ 20, 100, 150])
-YELLOW_UPPER = np.array([ 28, 255, 255])
+# YELLOW: 빛번짐(글레어) 대응 — S하한을 30까지 낮추고 V하한을 높여 바닥과 구분
+#  [빛번짐 원리] 강한 조명이 종이에 반사되면 S(채도)가 크게 떨어지지만(30~80),
+#               V(밝기)는 반대로 높아짐(200~255). 바닥(갈색)은 V가 낮음(60~140).
+#  → S_min 100→30, V_min 150 유지: 밝고 노란끼 있는 픽셀만 통과
+#  → H 범위 18~35: 빛 아래서 H가 약간 이동하는 것 포함
+YELLOW_LOWER = np.array([ 18,  30, 160])
+YELLOW_UPPER = np.array([ 35, 255, 255])
 
-# BLUE: 파란 박스(Double A) 인쇄면 오인식 방지를 위해 S상한 대폭 하향
-#  [측정 근거] 파란종이 S=113~141 vs 박스인쇄면 S=160~218 → S상한 160으로 분리
-#             종이는 채도가 낮고(연한 파랑) 박스 잉크는 채도가 높음(진한 파랑)
-#             V하한도 60→110으로 올려 어두운 박스 측면 추가 차단
-#  (이전: LOWER[100,80,60] UPPER[125,220,255] → 박스 인쇄면 다수 통과)
-BLUE_LOWER   = np.array([100,  90, 110])
-BLUE_UPPER   = np.array([120, 160, 240])
+# BLUE: 파란 종이(연한 파랑) 검출. 박스 인쇄면(진한 파랑)과 S값으로 구분.
+#  [카메라 특성] 로봇 카메라에서 파란 매트는 S=90~150 범위로 측정됨
+#               V하한 100으로 어두운 바닥/박스 측면 차단
+BLUE_LOWER   = np.array([100,  80, 100])
+BLUE_UPPER   = np.array([125, 170, 245])
 
 # 파란 종이 판정 기준: 전체 화면 픽셀의 몇 % 이상이면 종이로 간주
 BLUE_PAPER_RATIO = 0.025   # 2.5% (박스는 보통 1~2% 수준)
@@ -105,11 +104,24 @@ def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     return out
 
 
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
 def get_yellow_mask(hsv: np.ndarray) -> np.ndarray:
-    """노란 종이 마스크 반환."""
-    raw = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
-    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    """
+    노란 종이 마스크 반환.
+    빛번짐 대응: V 채널에 CLAHE를 적용해 과포화된 밝기를 정규화한 뒤
+    기본 범위(YELLOW_LOWER/UPPER)로 검출. 정규화 전/후 마스크를 OR해
+    글레어 중심부와 외곽 모두 포착.
+    """
+    # CLAHE로 V채널 정규화 → 빛번짐 중심부 채도 복원
+    hsv_eq = hsv.copy()
+    hsv_eq[:, :, 2] = _CLAHE.apply(hsv[:, :, 2])
+
+    raw1 = cv2.inRange(hsv,    YELLOW_LOWER, YELLOW_UPPER)  # 원본
+    raw2 = cv2.inRange(hsv_eq, YELLOW_LOWER, YELLOW_UPPER)  # CLAHE 보정본
+    raw  = cv2.bitwise_or(raw1, raw2)
+    out  = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
+    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
     return out
 
 
@@ -304,9 +316,7 @@ class ColorDetector:
             c = entry['contour']
             cv2.drawContours(vis, [c], -1, color, 3)
             cx, cy   = entry['cx'], entry['cy']
-            area     = entry['area']
-            offset   = entry['offset']
-            txt      = f"{label} area={area:.0f} off={offset:+.2f}"
+            txt      = f"{label} x={cx} y={cy}"
             cv2.putText(vis, txt, (max(0, cx - 60), max(20, cy)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
@@ -437,13 +447,6 @@ if __name__ == '__main__':
 
             result = detector.detect(frame)   # 내부에서 undistort → HSV → 마스크
             vis    = detector.draw_debug(frame, result)
-
-            for color in ['red', 'yellow', 'blue']:
-                e = result[color]
-                if e['found']:
-                    print(f"  [{color.upper()}] cx={e['cx']} cy={e['cy']} "
-                          f"area={e['area']:.0f} offset={e['offset']:+.2f}")
-
             cv2.imshow('Color Detector', vis)
             key = cv2.waitKey(1) & 0xFF
 

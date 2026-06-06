@@ -1,294 +1,425 @@
 """
-[파일] camera_only_robot.py
-[목적] LiDAR 없이 카메라만으로 색 인식 → 주행 → 색지 위 1초 정지 → 다음 색
+[파일] Camera_only.py
+[목적] 카메라만으로 RED → YELLOW → BLUE 색지를 순서대로 찾아가 1초 정지
+       SolvePnP 로 색지까지의 실제 거리(Z mm)와 수평 오프셋(X mm)을 추정,
+       '바퀴 축이 색지 안에 들어갔을 때' 정확히 멈춤
 
-[내일 목표 전용 단순 버전]
-  - LiDAR / VFH / 스레딩 / 장애물 회피 전부 제거
-  - 미션: RED → (1초 정지) → YELLOW → (1초 정지) → BLUE → (완전 정지)
-  - 카메라 캘리브레이션은 그대로 적용 (camera_corrector.py 재사용)
+[탐색(SEARCH) 전략]
+  ① 강탐지 (area > 1000px) : SolvePnP 기반 정밀 접근
+  ② 약탐지 (area > 200px)  : 해당 방향으로 천천히 유도 (탐색 타이머 리셋)
+  ③ 미탐지                  : 호회전(arc) 스위프 — 빠른 피벗 대신 전진+조향으로
+                              카메라 시야를 천천히 쓸어가며 재탐색
 
-[필요 파일 (같은 폴더에)]
-  camera_only_robot.py   ← 이 파일
-  camera_corrector.py    ← 왜곡 보정 클래스
-  camera_calibration.pkl ← 캘리브레이션 결과 (없으면 보정 없이 동작)
+[BLUE 바닥 vs 벽 구분]
+  색지 = 2D 수평면 → 이미지에서 가로가 세로보다 넓고(W/H > 0.45)
+                      화면 상단 35% 에만 있지 않음
+  벽/배너 = 3D 수직면 → 세로가 가로보다 길고 화면 상단에 치우침
 
-[아두이노 명령 프로토콜] — Robo_move.ino 와 동일
-  F {steer:.2f} {speed:.2f}\n  → 전진 (steer: -1~+1, speed: 0~1)
-  T {dir:.2f}\n                → 제자리 피벗 회전 (+1=우, -1=좌)
-  S\n                          → 즉시 정지  ← 아두이노에 추가 필요!
-      loop()에  else if (cmd == 'S') { brakeMotors(); }  한 줄 추가
+[현장에서 반드시 측정·조정해야 하는 값]
+  PAPER_W_MM / PAPER_H_MM  : 실제 색지 크기 (자로 측정)
+  WHEEL_AXLE_DIST_MM        : 카메라 렌즈 ~ 앞 바퀴 축 전방 거리 (mm)
 
-[조향 부호] 배선 좌우 반대를 코드로 보정한 상태이므로 그대로 사용
+[아두이노 명령 프로토콜]
+  F {steer:.2f} {speed:.2f}\n  → 전진
+  T {dir:.2f}\n                → 제자리 피벗 (+우 / -좌)  ← 탐색에는 미사용
+  S\n                          → 즉시 정지
 """
 
 import os
+import atexit
 import serial
 import time
 import cv2
 import numpy as np
 
-from camera_corrector import CameraCorrector
+from color_v2 import (ColorDetector, load_calibration,
+                       get_red_mask, get_yellow_mask, get_blue_mask)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  설정
+#  하드웨어 설정
 # ─────────────────────────────────────────────────────────────────────────────
-PORT_ARDU  = "/dev/ttyS0"     # 아두이노 포트
+PORT_ARDU  = "/dev/ttyS0"
 CAM_INDEX  = 0
-CAM_W, CAM_H = 640, 480
-CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera_calibration.pkl")
+CAM_W      = 640
+CAM_H      = 480
+CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "camera_calibration.pkl")
 
-MAX_STEER  = 1.0              # 조향 한계
+# ─────────────────────────────────────────────────────────────────────────────
+#  현장 측정값 ← 반드시 직접 측정 후 수정!
+# ─────────────────────────────────────────────────────────────────────────────
+PAPER_W_MM         = 300.0   # 색지 가로 길이 (mm)
+PAPER_H_MM         = 300.0   # 색지 세로 길이 (mm)
+WHEEL_AXLE_DIST_MM = 60.0  # 카메라 정사영 ~ 뒷바퀴 축 전방 거리 (mm)
 
-# ── HSV 색상 범위 (실제 색지 사진 측정값) ──────────────────────────────────
-# [수정] 빨강 V 상한 230→255: 실험실(어두운 바닥)에서 색지 반사로 V가 246까지
-#        올라가 230 상한에 잘려 검출이 0%가 되는 문제 해결. 시험장도 V 175라 안전.
-RED_LO1, RED_HI1 = np.array([0,   100, 80]), np.array([8,   255, 255])
-RED_LO2, RED_HI2 = np.array([155,  80, 80]), np.array([179, 255, 255])
+# ─────────────────────────────────────────────────────────────────────────────
+#  주행 파라미터
+# ─────────────────────────────────────────────────────────────────────────────
+MAX_STEER       = 1.0
+SPEED_FAR       = 0.55        # 정상 접근 속도 (먼 거리)
+SPEED_NEAR      = 0.35        # 감속 속도 (가까운 거리)
+DIST_SLOW_MM    = 400.0       # 감속 시작 거리 (mm)
+ALIGN_THRES_MM  = 30.0        # 도달 판정 X 허용 오차 (mm)
+STEER_GAIN      = 0.015       # angle(deg) → steer 변환 게인
+CONFIRM_FRAMES  = 8           # 도달 연속 N 프레임 충족 시 확정
+STOP_DURATION   = 1.0         # 정지 유지 시간 (초)
 
-# [수정] YELLOW: 갈색 박스 오인식 방지 → V하한 100→150, H상한 30→28, H하한 18→20
-#   근거: 노란종이 V=160~239 vs 갈색박스 V=93~149 → V하한 150으로 분리
-#         갈색박스 모서리 주황반사(H=29)를 H상한 28로 차단
-YELLOW_LO, YELLOW_HI = np.array([20, 100, 150]), np.array([28, 255, 255])
+# ─────────────────────────────────────────────────────────────────────────────
+#  탐색(SEARCH) 파라미터
+# ─────────────────────────────────────────────────────────────────────────────
+WEAK_MIN_AREA      = 200      # 약탐지 최소 면적 (px) — 이 이상이면 방향 유도
+WEAK_SPEED         = 0.25     # 약탐지 시 전진 속도
+WEAK_STEER_GAIN    = 0.60     # 약탐지 시 offset → steer 게인
 
-# [수정] BLUE: 파란 박스(Double A) 인쇄면 오인식 방지 → S상한 220→160, V하한 60→110
-#   근거: 파란종이 S=113~141 vs 박스인쇄면 S=160~218 → S상한 160으로 분리
-#         (종이=연한파랑 저채도, 박스잉크=진한파랑 고채도)
-BLUE_LO, BLUE_HI     = np.array([100, 90, 110]),  np.array([120, 160, 240])
+SEARCH_TIMEOUT     = 1.5      # 미탐지 후 호회전 탐색 시작까지 대기 (초)
+SEARCH_ARC_STEER   = 0.55     # 호회전 탐색 조향 세기
+SEARCH_ARC_SPEED   = 0.28     # 호회전 탐색 전진 속도
+SEARCH_ARC_DUR     = 2.5      # 탐색 방향 전환 주기 (초)
 
-BLUE_PAPER_RATIO = 0.025      # 파란 종이 vs 박스 면적 구분 (화면의 2.5% 이상 = 종이)
+# ─────────────────────────────────────────────────────────────────────────────
+#  파란 바닥 매트 ↔ 수직 벽 구분 파라미터
+# ─────────────────────────────────────────────────────────────────────────────
+BLUE_ASPECT_MIN    = 0.45     # bounding box W/H 최솟값 (이 미만 → 세워진 벽)
+BLUE_BOTTOM_MIN    = 0.35     # 컨투어 하단 y / frame_h 최솟값 (이 미만 → 화면 상단 벽)
 
-_K5 = np.ones((5, 5), np.uint8)
-_K9 = np.ones((9, 9), np.uint8)
+TARGETS = ['red', 'yellow', 'blue']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  색상 마스크 / 탐지
+#  SolvePnP 유틸리티
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _clean(mask):
-    """노이즈 제거: OPEN(잡음) → CLOSE(구멍 메우기)."""
-    m = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  _K5)
-    m = cv2.morphologyEx(m,    cv2.MORPH_CLOSE, _K9)
-    return m
+_OBJ_PTS = np.array([
+    [0,          0,          0],
+    [PAPER_W_MM, 0,          0],
+    [PAPER_W_MM, PAPER_H_MM, 0],
+    [0,          PAPER_H_MM, 0],
+], dtype=np.float32)
 
 
-def get_color_mask(hsv, color):
-    """지정 색상의 마스크 반환."""
-    if color == 'red':
-        m = cv2.bitwise_or(cv2.inRange(hsv, RED_LO1, RED_HI1),
-                           cv2.inRange(hsv, RED_LO2, RED_HI2))
-    elif color == 'yellow':
-        m = cv2.inRange(hsv, YELLOW_LO, YELLOW_HI)
-    else:  # blue
-        m = cv2.inRange(hsv, BLUE_LO, BLUE_HI)
-    return _clean(m)
+def _order_points(pts: np.ndarray) -> np.ndarray:
+    """4개 점 → [TL, TR, BR, BL] 시계방향 정렬."""
+    s    = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1).ravel()
+    return np.array([pts[np.argmin(s)], pts[np.argmin(diff)],
+                     pts[np.argmax(s)], pts[np.argmax(diff)]], dtype=np.float32)
 
 
-def detect_color(hsv, color, frame_w, frame_h, min_area=1000):
+def _extract_quad(contour: np.ndarray) -> np.ndarray:
+    """컨투어 → 4 꼭짓점 (approxPolyDP 우선, 실패 시 minAreaRect)."""
+    peri   = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+    pts    = approx.reshape(-1, 2).astype(np.float32)
+    if len(pts) != 4:
+        pts = cv2.boxPoints(cv2.minAreaRect(contour)).astype(np.float32)
+    return _order_points(pts)
+
+
+def solve_paper_pose(contour, cam_mat, dist_coeffs):
     """
-    지정 색상의 가장 큰 영역을 탐지.
-
-    Returns dict:
-      found  : 탐지 여부
-      cx, cy : 무게중심 좌표
-      area   : 면적 (px)
-      offset : 좌우 오프셋 (-1.0 좌 ~ +1.0 우, 0=중앙)
+    SolvePnP 로 색지 pose 추정.
+    Returns (z_mm, x_mm, steer, quad_pts) or None.
+      z_mm     : 전방 거리 (mm)
+      x_mm     : 수평 오프셋 (mm, 양수=우)
+      steer    : 조향값 (-1 ~ +1)
+      quad_pts : 추출된 4 꼭짓점 (시각화 재사용 — 이중 호출 방지)
     """
-    mask = get_color_mask(hsv, color)
+    if cam_mat is None:
+        return None
+    quad_pts = _extract_quad(contour)
+    try:
+        ok, _, tvec = cv2.solvePnP(_OBJ_PTS, quad_pts, cam_mat, dist_coeffs,
+                                    flags=cv2.SOLVEPNP_IPPE)
+    except cv2.error:
+        return None
+    if not ok:
+        return None
+    z_mm = float(tvec[2][0])
+    x_mm = float(tvec[0][0])
+    if z_mm <= 0:
+        return None
+    angle = np.degrees(np.arctan2(x_mm, z_mm))
+    steer = float(np.clip(angle * STEER_GAIN, -MAX_STEER, MAX_STEER))
+    return z_mm, x_mm, steer, quad_pts
 
-    # 파란 종이는 면적 필터로 박스 제거
-    if color == 'blue':
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        total_px = frame_w * frame_h
-        paper = [c for c in cnts if cv2.contourArea(c) > total_px * BLUE_PAPER_RATIO]
-        mask = np.zeros_like(mask)
-        if paper:
-            cv2.drawContours(mask, paper, -1, 255, -1)
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  탐색 보조 함수
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_mask(hsv, color: str):
+    """색상 이름으로 해당 마스크 반환."""
+    if color == 'red':    return get_red_mask(hsv)
+    if color == 'yellow': return get_yellow_mask(hsv)
+    return get_blue_mask(hsv)
+
+
+def get_weak_contour(hsv, color: str, frame_h: int):
+    """
+    약탐지: WEAK_MIN_AREA 이상이면 반환 (ColorDetector 기준 min_area=1000보다 낮음).
+    blue 는 바닥 필터 추가 적용.
+    Returns largest contour or None.
+    """
+    mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts    = [c for c in cnts if cv2.contourArea(c) > min_area]
+    cnts = [c for c in cnts if cv2.contourArea(c) > WEAK_MIN_AREA]
     if not cnts:
-        return {'found': False, 'cx': None, 'cy': None, 'area': 0.0, 'offset': None}
+        return None
+    if color == 'blue':
+        cnts = [c for c in cnts if is_floor_contour(c, frame_h)]
+    return max(cnts, key=cv2.contourArea) if cnts else None
 
-    best = max(cnts, key=cv2.contourArea)
-    M    = cv2.moments(best)
+
+def is_floor_contour(cnt, frame_h: int) -> bool:
+    """
+    2D 바닥 매트(수평)와 3D 수직 벽/배너를 구분.
+
+    바닥 매트 특징:
+      - 카메라가 앞/아래를 향할 때 가로가 세로보다 넓거나 비슷 (W/H >= 0.45)
+      - 화면 상단 35% 에만 존재하지 않음 (하단으로 이어져야 함)
+
+    세워진 벽/배너 특징:
+      - 세로가 가로보다 훨씬 길고 (W/H < 0.45)
+      - 화면 상단에 국한됨
+    """
+    _, y, w, h_box = cv2.boundingRect(cnt)
+    if h_box == 0:
+        return False
+    aspect   = w / h_box
+    bottom_y = (y + h_box) / frame_h   # 컨투어 하단 y 비율
+
+    # 세로로 너무 긴 객체 (세워진 벽) 제거
+    if aspect < BLUE_ASPECT_MIN:
+        return False
+    # 화면 최상단 35% 에만 있는 객체 제거 (원거리 수직 물체)
+    if bottom_y < BLUE_BOTTOM_MIN:
+        return False
+    return True
+
+
+def _contour_offset(cnt, frame_w: int) -> float:
+    """컨투어 무게중심의 좌우 오프셋 (-1.0 좌 ~ +1.0 우)."""
+    M = cv2.moments(cnt)
     if M['m00'] == 0:
-        return {'found': False, 'cx': None, 'cy': None, 'area': 0.0, 'offset': None}
-
-    cx     = int(M['m10'] / M['m00'])
-    cy     = int(M['m01'] / M['m00'])
-    area   = cv2.contourArea(best)
-    offset = (cx - frame_w / 2) / (frame_w / 2)
-    return {'found': True, 'cx': cx, 'cy': cy, 'area': area, 'offset': offset}
+        return 0.0
+    cx = M['m10'] / M['m00']
+    return (cx - frame_w / 2) / (frame_w / 2)
 
 
-def bottom_fill_ratio(hsv, color):
+def search_arc_steer(elapsed_since_timeout: float, base_dir: float) -> float:
     """
-    화면 하단 40% ROI 에서 타겟 색이 차지하는 비율.
-    → 색지에 올라탔는지 판단하는 핵심 지표.
+    호회전 탐색 조향값 계산.
+    base_dir: 마지막으로 타겟을 본 방향 (+1.0 우 / -1.0 좌)
+    SEARCH_ARC_DUR 초마다 방향 교대. 첫 번째 방향은 base_dir.
     """
-    h = hsv.shape[0]
-    roi = hsv[int(h * 0.60):, :]
-    mask = get_color_mask(roi, color)
-    return np.count_nonzero(mask) / (roi.shape[0] * roi.shape[1])
+    phase = int(elapsed_since_timeout / SEARCH_ARC_DUR) % 2
+    direction = base_dir if phase == 0 else -base_dir
+    return direction * SEARCH_ARC_STEER
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  메인 로직
+#  메인
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    # ── 시리얼 / 카메라 초기화 ─────────────────────────────────────────────
     ser = serial.Serial(PORT_ARDU, 460800, timeout=1)
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(CAM_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
     cap.set(cv2.CAP_PROP_FPS, 30)
+    fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cam_mat, dist_coeffs, calib_res = load_calibration(CALIB_FILE)
+    if calib_res and calib_res != (fw, fh):
+        print(f"[경고] 캘리브 해상도 불일치({calib_res} vs {fw}×{fh}) → PnP 비활성화")
+        cam_mat = dist_coeffs = None
 
-    # ── 캘리브레이션 보정 모듈 ─────────────────────────────────────────────
-    corrector = CameraCorrector(calib_file=CALIB_FILE, resolution=(actual_w, actual_h))
-    if not corrector.is_ready:
-        print("[경고] 캘리브레이션 미적용. 보정 없이 진행합니다.")
+    detector = ColorDetector(frame_w=fw, frame_h=fh,
+                             camera_matrix=cam_mat, dist_coeffs=dist_coeffs)
 
-    # ── 미션 / 상태 파라미터 ──────────────────────────────────────────────
-    TARGETS = ['red', 'yellow', 'blue']   # 순서 고정
-    target_idx = 0
+    if detector._map1 is not None:
+        pnp_mat  = detector._new_mtx
+        pnp_dist = np.zeros((4, 1), dtype=np.float64)
+    else:
+        pnp_mat  = cam_mat
+        pnp_dist = dist_coeffs if dist_coeffs is not None else np.zeros((4, 1))
 
-    # 상태: SEEK(탐색·접근) / STOP(정지 대기) / DONE(완료)
-    state = 'SEEK'
-
-    # 조정 가능한 임계값 ─ 내일 현장에서 이 숫자들을 맞추면 됨
-    ON_ZONE_FILL    = 0.50    # 하단 ROI 색 채움 비율 (이 값 이상이면 색지 위)
-    ON_ZONE_OFFSET  = 0.35    # 좌우 정렬 허용 오차
-    CONFIRM_FRAMES  = 10      # 연속 N 프레임 충족 시 도달 인정 (오탐 방지)
-    STOP_DURATION   = 1.0     # 정지 시간 (초) — 요구사항: 1초 이상
-
-    STEER_GAIN      = 0.80    # 조향 게인 (offset → steer)
-    SPEED_FAR       = 0.55    # 멀리 있을 때 접근 속도
-    SPEED_NEAR      = 0.35    # 가까이 왔을 때 감속 속도
-    AREA_SLOW       = 0.08    # 화면의 8% 이상 차지하면 감속
-    SEARCH_PIVOT    = 0.50    # 타겟 안 보일 때 피벗 회전 방향/세기 (+우)
-    SEARCH_TIMEOUT  = 1.5     # 타겟 미탐지 N초 후 피벗 재탐색 시작
-
-    on_zone_count = 0
-    stop_start    = None
-    last_seen     = time.time()
-    last_offset   = 0.0
-
-    # ── 종료 시 정지 ───────────────────────────────────────────────────────
-    import atexit
     def _cleanup():
         try:
-            ser.write(b"S\n")
-            time.sleep(0.1)
-            cap.release()
-            ser.close()
+            ser.write(b"S\n"); time.sleep(0.1)
+            cap.release(); cv2.destroyAllWindows(); ser.close()
         except Exception:
             pass
     atexit.register(_cleanup)
 
+    target_idx    = 0
+    state         = 'SEEK'
+    on_zone_count = 0
+    stop_start    = None
+    last_seen     = time.time()
+    last_steer    = 0.0          # 마지막 조향 방향 (탐색 시 초기 방향 결정)
+
     print("=" * 60)
-    print("  카메라 단독 색상 추적 주행 시작")
-    print("  목표 순서: RED → YELLOW → BLUE")
-    print("  종료: Ctrl+C")
+    print("  카메라 색상 추적 주행  |  SolvePnP + Arc Search")
+    print(f"  목표: RED → YELLOW → BLUE")
+    print(f"  색지 {PAPER_W_MM:.0f}×{PAPER_H_MM:.0f} mm  |  바퀴축 {WHEEL_AXLE_DIST_MM:.0f} mm")
+    print(f"  PnP: {'ON' if pnp_mat is not None else 'OFF(fallback)'}")
+    print(f"  약탐지 >{WEAK_MIN_AREA}px → 방향 유도 | 탐색: {SEARCH_ARC_DUR}s 호회전 교대")
     print("=" * 60)
 
-    # ── 메인 루프 (매 카메라 프레임마다 판단) ────────────────────────────
     while True:
         ret, raw = cap.read()
         if not ret:
             time.sleep(0.01)
             continue
 
-        # (1) 왜곡 보정
-        frame = corrector.update_frame(raw, crop_roi=True, debug=False)
-        fh, fw = frame.shape[:2]
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-        # ── 미션 완료 상태 ──────────────────────────────────────────────
+        # DONE 상태는 색 탐지 불필요 — 연산 절감
         if state == 'DONE':
             ser.write(b"S\n")
-            print("  ✅ 미션 완료 — 완전 정지 유지 중")
+            vis = raw.copy()
+            cv2.putText(vis, "MISSION COMPLETE", (fw // 2 - 120, fh // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+            cv2.imshow('Robot View', vis)
+            cv2.waitKey(1)
             time.sleep(0.1)
             continue
 
-        color = TARGETS[target_idx]   # 현재 목표 색
+        # ColorDetector: undistort + HSV + 마스크 일괄 처리
+        result = detector.detect(raw)
+        color  = TARGETS[target_idx]
+        vis    = detector.draw_debug(raw, result)
 
-        # ── 정지 대기 상태 (1초 카운트) ────────────────────────────────
+        # ── STOP (1초 대기) ───────────────────────────────────────────────
         if state == 'STOP':
-            ser.write(b"S\n")   # 매 프레임 정지 명령 재전송 (확실한 정지 유지)
+            ser.write(b"S\n")
             elapsed = time.time() - stop_start
             remain  = max(0.0, STOP_DURATION - elapsed)
-            print(f"  [STOP_{color.upper()}] 정지 중... 남은 시간 {remain:.2f}초")
-
+            cv2.putText(vis, f"STOP {color.upper()}  {remain:.1f}s",
+                        (fw // 2 - 90, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, (0, 255, 255), 2)
+            cv2.imshow('Robot View', vis)
+            cv2.waitKey(1)
             if elapsed >= STOP_DURATION:
-                # 1초 경과 → 다음 색으로
                 if target_idx < len(TARGETS) - 1:
-                    target_idx += 1
-                    state = 'SEEK'
+                    target_idx   += 1
+                    state         = 'SEEK'
                     on_zone_count = 0
-                    last_seen = time.time()
-                    print(f"  ✅ {color.upper()} 완료! → 다음 목표: {TARGETS[target_idx].upper()}")
+                    last_seen     = time.time()
+                    print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
                     state = 'DONE'
-                    print(f"  🔵 {color.upper()} 완료! 모든 미션 종료")
+                    print("  ✅ 전체 미션 완료!")
             continue
 
-        # ── 탐색·접근 상태 (SEEK) ──────────────────────────────────────
-        # min_area=1500: 갈색 박스 잔여 오탐(최대 689px)을 확실히 차단.
-        #   실제 색종이는 4000px 이상이라 정탐에는 영향 없음.
-        det = detect_color(hsv, color, fw, fh, min_area=1500)
+        # ── SEEK (탐색 · 접근) ────────────────────────────────────────────
 
-        # (2) 색지 위 판정
-        if det['found']:
-            last_seen   = time.time()
-            last_offset = det['offset']
+        # ── ① 강탐지 (ColorDetector 기준 min_area=1000 충족) ─────────────
+        det = result.get(color, {})
 
-            fill = bottom_fill_ratio(hsv, color)
-            on_zone = (fill >= ON_ZONE_FILL) and (abs(det['offset']) < ON_ZONE_OFFSET)
+        # blue: 바닥 매트 필터 적용 (수직 벽/배너 제거)
+        if color == 'blue' and det.get('found'):
+            if not is_floor_contour(det['contour'], fh):
+                det = {'found': False}   # 바닥 매트 아닌 것으로 판단 → 무시
 
-            if on_zone:
-                on_zone_count += 1
+        if det.get('found'):
+            last_seen = time.time()
+            cnt = det['contour']
+            cy  = det['cy']
+
+            pose = solve_paper_pose(cnt, pnp_mat, pnp_dist)
+
+            if pose is not None:
+                z_mm, x_mm, steer, quad_pts = pose   # quad_pts 재사용 — _extract_quad 이중 호출 방지
+                reached = (z_mm < WHEEL_AXLE_DIST_MM) and (abs(x_mm) < ALIGN_THRES_MM)
+                speed   = SPEED_NEAR if z_mm < DIST_SLOW_MM else SPEED_FAR
+                log_msg = f"PnP z={z_mm:.0f}mm x={x_mm:+.0f}mm"
+                pnp_col = (0, 255, 0) if reached else (0, 220, 255)
+                cv2.putText(vis, f"Z={z_mm:.0f}mm  X={x_mm:+.0f}mm",
+                            (fw // 2 - 100, 38),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, pnp_col, 2)
+                cv2.polylines(vis, [quad_pts.astype(np.int32)], True, pnp_col, 2)
             else:
-                on_zone_count = max(0, on_zone_count - 2)
+                offset  = det['offset']
+                steer   = float(np.clip(offset * 0.80, -MAX_STEER, MAX_STEER))
+                area_r  = det['area'] / (fw * fh)
+                speed   = SPEED_NEAR if area_r > 0.08 else SPEED_FAR
+                reached = (cy is not None and cy > fh * 0.75) and (abs(offset) < 0.30)
+                log_msg = f"fallback offset={offset:+.2f}"
 
-            # 연속 프레임 충족 → 도달 인정 → 정지 시작
+            last_steer    = steer
+            on_zone_count = on_zone_count + 1 if reached else max(0, on_zone_count - 2)
+
             if on_zone_count >= CONFIRM_FRAMES:
-                state = 'STOP'
-                stop_start = time.time()
+                state = 'STOP'; stop_start = time.time()
                 ser.write(b"S\n")
-                print(f"  🎯 {color.upper()} 도달! 1초 정지 시작 "
-                      f"(fill={fill:.2f} offset={det['offset']:+.2f})")
+                print(f"  🎯 {color.upper()} 도달! {log_msg}")
+                cv2.imshow('Robot View', vis); cv2.waitKey(1)
                 continue
 
-            # (3) 아직 도달 전 → 색지 향해 접근
-            offset     = det['offset']
-            area_ratio = det['area'] / (fw * fh)
-            steer = max(-MAX_STEER, min(MAX_STEER, offset * STEER_GAIN))
-            speed = SPEED_NEAR if area_ratio > AREA_SLOW else SPEED_FAR
-
             ser.write(f"F {steer:.2f} {speed:.2f}\n".encode())
-            print(f"  [SEEK_{color.upper()}] offset={offset:+.2f} area={area_ratio*100:.1f}% "
-                  f"fill={fill:.2f} cnt={on_zone_count} → F {steer:.2f} {speed:.2f}")
+            print(f"  [SEEK] {color.upper()} {log_msg} steer={steer:+.2f} cnt={on_zone_count}")
 
         else:
-            # (4) 타겟 안 보임 → 잠시 후 제자리 피벗 재탐색
-            on_zone_count = 0
-            elapsed = time.time() - last_seen
-            if elapsed > SEARCH_TIMEOUT:
-                # 마지막으로 본 방향 쪽으로 회전 (놓친 방향으로 되돌아감)
-                pivot = SEARCH_PIVOT if last_offset >= 0 else -SEARCH_PIVOT
-                ser.write(f"T {pivot:.2f}\n".encode())
-                print(f"  [SEARCH_{color.upper()}] 미탐지 {elapsed:.1f}초 → 피벗 dir={pivot:+.2f}")
+            # ── ② 약탐지: 강탐지 실패 시 낮은 임계값으로 재탐지 ──────────
+            # hsv_u는 강탐지 실패 시에만 필요 → 여기서 지연 계산
+            on_zone_count = max(0, on_zone_count - 1)
+            hsv_u    = cv2.cvtColor(result['undistorted'], cv2.COLOR_BGR2HSV)
+            weak_cnt = get_weak_contour(hsv_u, color, fh)
+
+            if weak_cnt is not None:
+                # 약탐지 성공 → 해당 방향으로 천천히 유도
+                weak_offset = _contour_offset(weak_cnt, fw)
+                steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
+                                            -MAX_STEER, MAX_STEER))
+                last_steer  = steer
+                last_seen   = time.time()   # 탐색 타이머 리셋
+                ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
+                # 약탐지 윤곽 표시 (점선 효과: 1px 선)
+                cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
+                cv2.putText(vis, f"WEAK {color.upper()} off={weak_offset:+.2f}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 0), 2)
+                print(f"  [WEAK] {color.upper()} offset={weak_offset:+.2f} → "
+                      f"gentle steer={steer:+.2f}")
+
             else:
-                # 잠깐의 미탐지는 정지로 버팀 (떨림 방지)
-                ser.write(b"S\n")
-                print(f"  [SEARCH_{color.upper()}] 타겟 일시 미탐지 ({elapsed:.1f}초) → 정지 대기")
+                # ── ③ 완전 미탐지 → 호회전(arc) 탐색 ───────────────────
+                elapsed = time.time() - last_seen
+
+                if elapsed < SEARCH_TIMEOUT:
+                    # 잠깐의 미탐지는 그대로 정지 (흔들림 방지)
+                    ser.write(b"S\n")
+                    cv2.putText(vis, f"WAIT {elapsed:.1f}s",
+                                (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.55, (100, 100, 255), 2)
+                else:
+                    # 호회전 탐색 (전진 + 느린 조향으로 시야를 천천히 스위프)
+                    t_search = elapsed - SEARCH_TIMEOUT
+                    base_dir = 1.0 if last_steer >= 0 else -1.0
+                    arc_steer = search_arc_steer(t_search, base_dir)
+
+                    ser.write(f"F {arc_steer:.2f} {SEARCH_ARC_SPEED:.2f}\n".encode())
+                    phase_lbl = "→우호전" if arc_steer > 0 else "←좌호전"
+                    cv2.putText(vis, f"SEARCH {phase_lbl} {t_search:.1f}s",
+                                (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.55, (100, 100, 255), 2)
+                    print(f"  [SEARCH] {color.upper()} {elapsed:.1f}s 미탐지 "
+                          f"arc={arc_steer:+.2f}")
+
+        # ── 공통 HUD ─────────────────────────────────────────────────────
+        cnt_bar = f"cnt:{on_zone_count}/{CONFIRM_FRAMES}"
+        cv2.putText(vis, f"{state} | {color.upper()} | {cnt_bar}",
+                    (5, fh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+        cv2.imshow('Robot View', vis)
+        if (cv2.waitKey(1) & 0xFF) == ord('q'):
+            print("  [종료] q 입력")
+            break
+
+    ser.write(b"S\n")
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
