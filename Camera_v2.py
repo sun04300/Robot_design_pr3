@@ -384,7 +384,7 @@ def main():
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist)
 
             area_r = det['area'] / (fw * fh)
-            if area_r > AREA_PEAK_THRES:
+            if area_r > AREA_PEAK_THRES and lock_state:
                 area_peak_seen = True
                 peak_area_r = max(peak_area_r, area_r)
 
@@ -433,8 +433,13 @@ def main():
                             (fw // 2 - 100, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
 
-            last_steer    = steer_cmd
-            on_zone_count = on_zone_count + 1 if reached else max(0, on_zone_count - 1)
+            last_steer = steer_cmd
+            if area_peak_seen:
+                # 최종 진입 단계: 브랜치 ②가 count 관리, 여기선 감소 금지
+                if reached:
+                    on_zone_count += 1
+            else:
+                on_zone_count = on_zone_count + 1 if reached else max(0, on_zone_count - 1)
 
             if on_zone_count >= CONFIRM_FRAMES:
                 state = 'STOP'; stop_start = time.time()
