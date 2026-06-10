@@ -72,6 +72,8 @@ SEARCH_TIMEOUT   = 1.5
 SEARCH_ARC_STEER = 0.55
 SEARCH_ARC_SPEED = 0.28
 SEARCH_ARC_DUR   = 2.5
+GAP_DETECT_MM    = 600.0   # 탐색 중 전방 이 거리 이내 장애물 감지 시 갭 이동 모드
+GAP_STEER_GAIN   = 0.008   # 갭 방향 각도(deg) → 조향 변환 게인
 
 TARGETS = ['red', 'yellow', 'blue']
 
@@ -125,6 +127,24 @@ def nearest_in_arc(hist, has_pt, center_cw, arc_half=25):
         if has_pt[idx] and hist[idx] < min_d:
             min_d = hist[idx]
     return min_d
+
+
+def find_gap_steer(hist, has_pt):
+    """전방 ±120° 중 가장 먼 방향(갭)의 steer 반환. 마스크 구간 제외."""
+    best_dist = 0.0
+    best_deg  = 0.0
+    for angle_cw in range(0, 361, int(BIN_DEG)):
+        if MOUNT_MASK_LOW <= angle_cw <= MOUNT_MASK_HIGH:
+            continue
+        signed = angle_cw if angle_cw <= 180 else angle_cw - 360
+        if abs(signed) > 120:
+            continue
+        idx = int(angle_cw / BIN_DEG) % N_BINS
+        d = hist[idx] if has_pt[idx] else 9999.0
+        if d > best_dist:
+            best_dist = d
+            best_deg  = signed
+    return float(np.clip(best_deg * GAP_STEER_GAIN, -MAX_STEER, MAX_STEER))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -568,13 +588,23 @@ def main():
                 else:
                     t_search  = elapsed - SEARCH_TIMEOUT
                     base_dir  = 1.0 if last_steer >= 0 else -1.0
-                    arc_steer = search_arc_steer(t_search, base_dir)
-                    send_fwd(ser, arc_steer, SEARCH_ARC_SPEED, lidar)
-                    phase_lbl = "→우호전" if arc_steer > 0 else "←좌호전"
-                    cv2.putText(vis, f"SEARCH {phase_lbl} {t_search:.1f}s",
-                                (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.55, (100, 100, 255), 2)
-                    print(f"  [SEARCH] {color.upper()} {elapsed:.1f}s arc={arc_steer:+.2f}")
+                    hist_s, has_pt_s, _ = lidar.get_state()
+                    front_d = nearest_in_arc(hist_s, has_pt_s, 0.0, 80)
+                    if front_d > GAP_DETECT_MM:
+                        arc_steer = search_arc_steer(t_search, base_dir)
+                        send_fwd(ser, arc_steer, SEARCH_ARC_SPEED, lidar)
+                        phase_lbl = "→우호전" if arc_steer > 0 else "←좌호전"
+                        cv2.putText(vis, f"SEARCH {phase_lbl} {t_search:.1f}s",
+                                    (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55, (100, 100, 255), 2)
+                        print(f"  [SEARCH] {color.upper()} {elapsed:.1f}s arc={arc_steer:+.2f}")
+                    else:
+                        gap_st = find_gap_steer(hist_s, has_pt_s)
+                        send_fwd(ser, gap_st, SEARCH_ARC_SPEED, lidar)
+                        cv2.putText(vis, f"GAP {gap_st:+.2f} front={front_d:.0f}mm",
+                                    (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55, (0, 180, 255), 2)
+                        print(f"  [WALL GAP] {color.upper()} front={front_d:.0f}mm gap={gap_st:+.2f}")
 
         # ── 공통 HUD ─────────────────────────────────────────────────────
         _, hp_now, _ = lidar.get_state()
