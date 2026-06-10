@@ -36,22 +36,16 @@ RED_UPPER1  = np.array([ 10, 255, 255])
 RED_LOWER2  = np.array([150,  70,  80])  # 핑크-마젠타 (H 고주파 끝)
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: 빛번짐(글레어) 대응 — S하한을 30까지 낮추고 V하한을 높여 바닥과 구분
-#  [빛번짐 원리] 강한 조명이 종이에 반사되면 S(채도)가 크게 떨어지지만(30~80),
-#               V(밝기)는 반대로 높아짐(200~255). 바닥(갈색)은 V가 낮음(60~140).
-#  → S_min 100→30, V_min 150 유지: 밝고 노란끼 있는 픽셀만 통과
-#  → H 범위 18~35: 빛 아래서 H가 약간 이동하는 것 포함
-YELLOW_LOWER = np.array([ 18,  30, 160])
+# YELLOW: S_min 30→80 — 박스 라벨·반사광(S<80) 오탐 차단
+#  실제 색지: H≈24 S≈149 V≈215 → S_min=80에서도 충분히 검출됨
+#  V_min 160→150: 약간 어두운 환경 대응
+YELLOW_LOWER = np.array([ 18,  80, 150])
 YELLOW_UPPER = np.array([ 35, 255, 255])
 
-# BLUE: 파란 종이(연한 파랑) 검출. 박스 인쇄면(진한 파랑)과 S값으로 구분.
-#  [카메라 특성] 로봇 카메라에서 파란 매트는 S=90~150 범위로 측정됨
-#               V하한 100으로 어두운 바닥/박스 측면 차단
-BLUE_LOWER   = np.array([100,  80, 100])
-BLUE_UPPER   = np.array([125, 170, 245])
-
-# 파란 종이 판정 기준: 전체 화면 픽셀의 몇 % 이상이면 종이로 간주
-BLUE_PAPER_RATIO = 0.025   # 2.5% (박스는 보통 1~2% 수준)
+# BLUE: 파란 색지 검출 (주변에 파란 박스 없음 → 단순 색 범위만 사용)
+#  측정값: H≈115 S≈143 V≈143. H범위를 95~135로 넓혀 조명 변화 대응.
+BLUE_LOWER   = np.array([ 95,  80,  70])
+BLUE_UPPER   = np.array([135, 255, 240])
 
 # 노이즈 제거용 커널
 _K5 = np.ones((5, 5), np.uint8)
@@ -152,33 +146,6 @@ def contour_center(contour) -> tuple:
     return int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
 
 
-def find_blue_paper_contour(blue_mask: np.ndarray, frame_h: int, frame_w: int):
-    """
-    전체 파란 마스크에서 '종이'에 해당하는 컨투어만 반환.
-    판정 기준: 컨투어 면적 > 전체 화면의 BLUE_PAPER_RATIO (2.5%)
-    → 박스처럼 작은 객체는 필터링됨.
-
-    Returns:
-        paper_cnt: 종이 컨투어 (없으면 None)
-        box_cnts : 박스로 판정된 컨투어 리스트
-    """
-    total_px = frame_h * frame_w
-    min_paper_px = total_px * BLUE_PAPER_RATIO
-
-    cnts, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    paper_cnts, box_cnts = [], []
-
-    for c in cnts:
-        area = cv2.contourArea(c)
-        if area < 500:                   # 너무 작은 노이즈 제거
-            continue
-        if area >= min_paper_px:
-            paper_cnts.append(c)
-        else:
-            box_cnts.append(c)
-
-    paper_cnt = max(paper_cnts, key=cv2.contourArea) if paper_cnts else None
-    return paper_cnt, box_cnts
 
 
 # ────────────────────────────────────────────────────
@@ -278,10 +245,10 @@ class ColorDetector:
         yel_c = get_largest_contour(yel_m, self.min_area)
         result['yellow'] = self._make_entry(yel_c)
 
-        # BLUE (종이만)
+        # BLUE
         blu_m          = get_blue_mask(hsv)
-        paper_c, _     = find_blue_paper_contour(blu_m, self.fh, self.fw)
-        result['blue'] = self._make_entry(paper_c)
+        blu_c          = get_largest_contour(blu_m, self.min_area)
+        result['blue'] = self._make_entry(blu_c)
 
         return result
 

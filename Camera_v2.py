@@ -67,7 +67,7 @@ MAX_STEER       = 1.0
 SPEED_FAR       = 0.55
 SPEED_NEAR      = 0.35
 DIST_SLOW_MM    = 100.0       # 이 거리 미만이면 감속 (PnP 조향 참고용)
-AREA_PEAK_THRES = 0.18        # 색지 면적 피크 감지 임계값 → 정지 로직의 시작점
+AREA_PEAK_THRES = 0.04        # 색지 면적 피크 감지 임계값 → 정지 로직의 시작점
 STEER_GAIN      = 0.015
 CONFIRM_FRAMES  = 4
 STOP_DURATION   = 1.0
@@ -83,12 +83,6 @@ SEARCH_TIMEOUT  = 1.5
 SEARCH_ARC_STEER = 0.55
 SEARCH_ARC_SPEED = 0.28
 SEARCH_ARC_DUR  = 2.5
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  BLUE 바닥 매트 ↔ 수직 벽 구분
-# ─────────────────────────────────────────────────────────────────────────────
-BLUE_ASPECT_MIN = 0.45
-BLUE_BOTTOM_MIN = 0.35
 
 TARGETS = ['red', 'yellow', 'blue']
 
@@ -178,24 +172,13 @@ def _get_mask(hsv, color: str):
     return get_blue_mask(hsv)
 
 
-def get_weak_contour(hsv, color: str, frame_h: int):
+def get_weak_contour(hsv, color: str):
     mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = [c for c in cnts if cv2.contourArea(c) > WEAK_MIN_AREA]
     if not cnts:
         return None
-    if color == 'blue':
-        cnts = [c for c in cnts if is_floor_contour(c, frame_h)]
-    return max(cnts, key=cv2.contourArea) if cnts else None
-
-
-def is_floor_contour(cnt, frame_h: int) -> bool:
-    _, y, w, h_box = cv2.boundingRect(cnt)
-    if h_box == 0:
-        return False
-    aspect   = w / h_box
-    bottom_y = (y + h_box) / frame_h
-    return aspect >= BLUE_ASPECT_MIN and bottom_y >= BLUE_BOTTOM_MIN
+    return max(cnts, key=cv2.contourArea)
 
 
 def _contour_offset(cnt, frame_w: int) -> float:
@@ -323,9 +306,6 @@ def main():
 
         # ── SEEK ─────────────────────────────────────────────────────────
         det = result.get(color, {})
-        if color == 'blue' and det.get('found'):
-            if not is_floor_contour(det['contour'], fh):
-                det = {'found': False}
 
         # ① 강탐지 ────────────────────────────────────────────────────────
         if det.get('found'):
@@ -371,7 +351,7 @@ def main():
         # ② 피크 후 미탐지 ────────────────────────────────────────────────
         elif area_peak_seen:
             hsv_u    = cv2.cvtColor(result['undistorted'], cv2.COLOR_BGR2HSV)
-            weak_cnt = get_weak_contour(hsv_u, color, fh)
+            weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
                 weak_offset = _contour_offset(weak_cnt, fw)
@@ -408,7 +388,7 @@ def main():
         else:
             on_zone_count = max(0, on_zone_count - 1)
             hsv_u    = cv2.cvtColor(result['undistorted'], cv2.COLOR_BGR2HSV)
-            weak_cnt = get_weak_contour(hsv_u, color, fh)
+            weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
                 weak_offset = _contour_offset(weak_cnt, fw)
