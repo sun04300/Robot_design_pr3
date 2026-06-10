@@ -421,6 +421,10 @@ def main():
                             (fw // 2 - 170, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, pnp_col, 2)
                 cv2.polylines(vis, [quad_pts.astype(np.int32)], True, pnp_col, 2)
+                ctr = quad_pts.mean(axis=0).astype(int)
+                cv2.circle(vis, tuple(ctr), 6, pnp_col, -1)
+                cv2.line(vis, (ctr[0]-15, ctr[1]), (ctr[0]+15, ctr[1]), pnp_col, 1)
+                cv2.line(vis, (ctr[0], ctr[1]-15), (ctr[0], ctr[1]+15), pnp_col, 1)
 
             else:
                 # PnP 실패 → 컨투어 중심으로 "4코너 보이도록" 조향
@@ -432,6 +436,12 @@ def main():
                 cv2.putText(vis, f"{'LOCK✓' if lock_state else 'seek-4corner'} A={area_r:.3f}",
                             (fw // 2 - 100, 38),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
+                M_c = cv2.moments(cnt)
+                if M_c['m00'] > 0:
+                    ctr = (int(M_c['m10'] / M_c['m00']), int(M_c['m01'] / M_c['m00']))
+                    cv2.circle(vis, ctr, 6, (200, 200, 200), -1)
+                    cv2.line(vis, (ctr[0]-15, ctr[1]), (ctr[0]+15, ctr[1]), (200, 200, 200), 1)
+                    cv2.line(vis, (ctr[0], ctr[1]-15), (ctr[0], ctr[1]+15), (200, 200, 200), 1)
 
             last_steer = steer_cmd
             if area_peak_seen:
@@ -470,6 +480,12 @@ def main():
                 last_seen   = time.time()
                 ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
                 cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
+                M_w = cv2.moments(weak_cnt)
+                if M_w['m00'] > 0:
+                    ctr = (int(M_w['m10'] / M_w['m00']), int(M_w['m01'] / M_w['m00']))
+                    cv2.circle(vis, ctr, 6, (180, 255, 0), -1)
+                    cv2.line(vis, (ctr[0]-15, ctr[1]), (ctr[0]+15, ctr[1]), (180, 255, 0), 1)
+                    cv2.line(vis, (ctr[0], ctr[1]-15), (ctr[0], ctr[1]+15), (180, 255, 0), 1)
                 cv2.putText(vis, enter_lbl,
                             (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 255, 0), 2)
                 print(f"  [ENTER] {color.upper()} {enter_lbl}")
@@ -503,6 +519,12 @@ def main():
                 last_seen   = time.time()
                 ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
                 cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
+                M_w = cv2.moments(weak_cnt)
+                if M_w['m00'] > 0:
+                    ctr = (int(M_w['m10'] / M_w['m00']), int(M_w['m01'] / M_w['m00']))
+                    cv2.circle(vis, ctr, 6, (180, 180, 0), -1)
+                    cv2.line(vis, (ctr[0]-15, ctr[1]), (ctr[0]+15, ctr[1]), (180, 180, 0), 1)
+                    cv2.line(vis, (ctr[0], ctr[1]-15), (ctr[0], ctr[1]+15), (180, 180, 0), 1)
                 cv2.putText(vis, f"WEAK {color.upper()} off={weak_offset:+.2f}",
                             (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 0), 2)
                 print(f"  [WEAK] {color.upper()} offset={weak_offset:+.2f} → "
