@@ -94,7 +94,7 @@ WALL_DETECT_MM = 650.0   # 이 거리 이내에서만 벽으로 인식
 WALL_P_GAIN    = 0.005   # 오차(mm)당 조향 보정량
 WALL_BLEND     = 0.50    # 벽 보정이 최종 조향에서 차지하는 가중치
 WALL_ARC_HALF  = 30      # 측면 측정 아크 반폭 (degree)
-FRONT_ARC_HALF = 50      # 전방 측정 아크 반폭 (degree)
+FRONT_ARC_HALF = 70      # 전방 측정 아크 반폭 (degree)
 
 # 카메라 지지대 마스크: 후방 180° ± 60° 제외
 MOUNT_MASK_LOW  = 120.0

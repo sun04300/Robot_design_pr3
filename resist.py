@@ -92,7 +92,7 @@ N_BINS       = int(360 / BIN_DEG)
 EMERGENCY_MM = 150.0
 VELO_DOWN_MM = 400.0
 ROBOT_RADIUS = 35.0
-FRONT_ARC_HALF = 50      # 전방 긴급 감지 아크 반폭 (degree)
+FRONT_ARC_HALF = 70      # 전방 긴급 감지 아크 반폭 (degree)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  코너 반발력 파라미터
