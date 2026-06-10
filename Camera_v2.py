@@ -161,7 +161,7 @@ def solve_paper_pose(contour, cam_mat, dist_coeffs):
         return None
     z_mm = float(tvec[2][0])
     x_mm = float(tvec[0][0])
-    if z_mm <= 0:
+    if not (np.isfinite(z_mm) and np.isfinite(x_mm) and z_mm > 0):
         return None
     angle = np.degrees(np.arctan2(x_mm, z_mm))
     steer = float(np.clip(angle * STEER_GAIN, -MAX_STEER, MAX_STEER))
