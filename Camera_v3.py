@@ -279,8 +279,8 @@ def _vfh_drive(ser):
     """VFH 결과로 Arduino 주행 명령 전송 (미탐지 탐색용)."""
     ls = _lidar_read()
     if not ls['has_data']:
-        ser.write(b"S\n")
-        return "NO_LIDAR"
+        ser.write(f"F 0.00 {PIVOT_SPEED:.2f}\n".encode())  # LiDAR 미준비 → 직진 유지
+        return "NO_LIDAR_FWD"
     if ls['vfh_action'] == 'BACK':
         ser.write(b"B 0.80\n")
         return f"VFH_BACK emg={ls['emg_near']:.0f}mm"
@@ -739,16 +739,24 @@ def main():
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
             else:
                 on_zone_count += 1
-                ser.write(b"S\n")
-                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES}",
-                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
+                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} pk={peak_area_r:.2f}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 180), 2)
                 print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count}")
                 if on_zone_count >= CONFIRM_FRAMES:
-                    state = 'STOP'; stop_start = time.time()
+                    if peak_area_r >= AREA_SLOW_THRES:
+                        # 충분히 가까이 접근했을 때만 정지
+                        state = 'STOP'; stop_start = time.time()
+                        ser.write(b"S\n")
+                        print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f}")
+                        cv2.imshow('Robot View', vis); cv2.waitKey(1)
+                        continue
+                    else:
+                        # 피크가 작았음(멀리서 본 것) → 계속 직진 접근
+                        on_zone_count = 0
+                        ser.write(f"F {last_steer:.2f} {PIVOT_SPEED:.2f}\n".encode())
+                        print(f"  [NEAR-FWD] {color.upper()} pk={peak_area_r:.2f} 아직 멀음 → 직진")
+                else:
                     ser.write(b"S\n")
-                    print(f"  🎯 {color.upper()} 도달!")
-                    cv2.imshow('Robot View', vis); cv2.waitKey(1)
-                    continue
 
         # ③ 미탐지 → VFH 탐색 ─────────────────────────────────────────────
         else:
