@@ -27,7 +27,8 @@ import time
 import cv2
 import numpy as np
 
-from color_v2 import (load_calibration, get_red_mask, get_yellow_mask, get_blue_mask)
+from color_v2 import (load_calibration,
+                       get_red_mask, get_yellow_mask, get_blue_mask)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,15 +42,10 @@ CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "camera_calibration.pkl")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  처리 해상도  (다운스케일로 CPU 절감)
-# ─────────────────────────────────────────────────────────────────────────────
-PROC_W, PROC_H = 320, 240
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  탐지 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
-MIN_AREA       = 300    # 강탐지 최소 컨투어 면적 (PROC 기준 px²)
-WEAK_MIN_AREA  = 50     # 약탐지 최소 컨투어 면적
+MIN_AREA       = 1000   # 강탐지 최소 컨투어 면적 (640×480 기준 px²)
+WEAK_MIN_AREA  = 200    # 약탐지 최소 컨투어 면적
 AR_MIN         = 0.5    # minAreaRect 종횡비 정상 범위 하한
 AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
 
@@ -295,14 +291,13 @@ def _get_mask(hsv, color: str):
     return get_blue_mask(hsv)
 
 
-def _detect_paper(small, color: str):
+def _detect_paper(frame, color: str):
     """
-    320×240 프레임에서 색지 탐지.
+    640×480 프레임에서 색지 탐지.
     반환: None  또는
           {'cx','cy','area_r','contour','method'('RECT'|'DIST'),'ar'}
-    좌표는 PROC_W×PROC_H 공간 기준.
     """
-    hsv  = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_mask(hsv, color)
 
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -311,7 +306,7 @@ def _detect_paper(small, color: str):
         return None
 
     cnt    = max(cnts, key=cv2.contourArea)
-    area_r = cv2.contourArea(cnt) / (PROC_W * PROC_H)
+    area_r = cv2.contourArea(cnt) / (CAM_W * CAM_H)
 
     rect           = cv2.minAreaRect(cnt)
     (cx, cy), (rw, rh), _ = rect
@@ -325,7 +320,7 @@ def _detect_paper(small, color: str):
         method = 'RECT'
     else:
         # 가림/왜곡 심함 → 마스크 내 거리 변환 최대점(가장 안쪽)을 중심으로
-        roi = np.zeros((PROC_H, PROC_W), dtype=np.uint8)
+        roi = np.zeros((CAM_H, CAM_W), dtype=np.uint8)
         cv2.drawContours(roi, [cnt], -1, 255, -1)
         dist = cv2.distanceTransform(roi, cv2.DIST_L2, 5)
         _, _, _, max_loc = cv2.minMaxLoc(dist)
@@ -342,12 +337,12 @@ def _detect_paper(small, color: str):
     }
 
 
-def _weak_detect(small, color: str):
+def _weak_detect(frame, color: str):
     """
     약탐지: 낮은 면적 임계값으로 종이 일부만 보여도 중심 반환.
     반환: None 또는 (contour, cx, cy)
     """
-    hsv  = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = [c for c in cnts if cv2.contourArea(c) > WEAK_MIN_AREA]
@@ -365,7 +360,7 @@ def _weak_detect(small, color: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _offset(cx: float) -> float:
-    return (cx - PROC_W / 2) / (PROC_W / 2)
+    return (cx - CAM_W / 2) / (CAM_W / 2)
 
 
 def _draw_ctr(vis, cx, cy, color):
@@ -438,7 +433,7 @@ def main():
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
-    print(f"  처리해상도: {PROC_W}×{PROC_H}   목표: RED→YELLOW→BLUE")
+    print(f"  처리해상도: {CAM_W}×{CAM_H}   목표: RED→YELLOW→BLUE")
     print("=" * 60)
 
     while True:
@@ -447,14 +442,9 @@ def main():
             time.sleep(0.01)
             continue
 
-        # ── undistort + 다운스케일 ────────────────────────────────────────
-        # 처리: 320×240 / 표시: 640×480 고정
+        # ── undistort ────────────────────────────────────────────────────
         undist = cv2.remap(raw, map1, map2, cv2.INTER_LINEAR) if map1 is not None else raw
-        small  = cv2.resize(undist, (PROC_W, PROC_H), interpolation=cv2.INTER_LINEAR)
-        vis    = undist.copy()   # 표시용 640×480 원본 해상도
-
-        # 탐지 좌표(320×240) → 표시 좌표(640×480) 변환 계수
-        SX, SY = CAM_W // PROC_W, CAM_H // PROC_H   # 2, 2
+        vis    = undist.copy()
 
         # ── DONE ─────────────────────────────────────────────────────────
         if state == 'DONE':
@@ -503,7 +493,7 @@ def main():
             continue
 
         # ── SEEK ─────────────────────────────────────────────────────────
-        det = _detect_paper(small, color)
+        det = _detect_paper(undist, color)
 
         # ① 강탐지 ──────────────────────────────────────────────────────
         if det is not None:
@@ -514,8 +504,7 @@ def main():
             method    = det['method']
             ar        = det['ar']
 
-            # 표시용 좌표 (640×480 공간)
-            dcx, dcy = int(cx * SX), int(cy * SY)
+            dcx, dcy = int(cx), int(cy)
 
             if area_r >= AREA_PEAK_THRES:
                 area_peak_seen = True
@@ -545,9 +534,8 @@ def main():
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
-            # minAreaRect 박스 및 중심 표시 (좌표 ×2 스케일)
-            box_scaled = (cv2.boxPoints(det['rect']) * SX).astype(np.int32)
-            cv2.polylines(vis, [box_scaled], True, (0, 180, 255), 2)
+            box_pts = cv2.boxPoints(det['rect']).astype(np.int32)
+            cv2.polylines(vis, [box_pts], True, (0, 180, 255), 2)
             _draw_ctr(vis, dcx, dcy, (0, 180, 255))
             cv2.putText(vis, f"AR={ar:.1f}", (dcx + 10, dcy - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 180, 255), 1)
@@ -563,7 +551,7 @@ def main():
 
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
-            w = _weak_detect(small, color)
+            w = _weak_detect(undist, color)
             if w is not None:
                 cnt_w, wcx, wcy = w
                 on_zone_count  = 0
@@ -575,9 +563,8 @@ def main():
                 steer_cmd      = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
                 smoothed_steer = steer_cmd
                 ser.write(f"F {steer_cmd:.2f} {WEAK_SPEED:.2f}\n".encode())
-                cnt_w_scaled = (cnt_w * SX).astype(np.int32)
-                cv2.drawContours(vis, [cnt_w_scaled], -1, (180, 255, 0), 1)
-                _draw_ctr(vis, int(wcx * SX), int(wcy * SY), (180, 255, 0))
+                cv2.drawContours(vis, [cnt_w], -1, (180, 255, 0), 1)
+                _draw_ctr(vis, int(wcx), int(wcy), (180, 255, 0))
                 cv2.putText(vis, f"ENTERING {color.upper()} off={weak_offset:+.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 255, 0), 2)
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
@@ -598,15 +585,14 @@ def main():
         # ③ 미탐지 → VFH 탐색 ────────────────────────────────────────────
         else:
             on_zone_count = max(0, on_zone_count - 1)
-            w = _weak_detect(small, color)
+            w = _weak_detect(undist, color)
             if w is not None:
                 cnt_w, wcx, wcy = w
                 weak_offset = _offset(wcx)
                 w_steer     = float(np.clip(weak_offset * 3.0, -MAX_STEER, MAX_STEER))
                 last_seen   = time.time()
                 ser.write(f"F {w_steer:.2f} {PIVOT_SPEED:.2f}\n".encode())
-                cnt_w_scaled = (cnt_w * SX).astype(np.int32)
-                cv2.drawContours(vis, [cnt_w_scaled], -1, (180, 180, 0), 1)
+                cv2.drawContours(vis, [cnt_w], -1, (180, 180, 0), 1)
                 arrow = '→' if w_steer > 0 else '←'
                 cv2.putText(vis, f"WEAK-CURVE{arrow} off={weak_offset:+.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 180, 0), 2)
