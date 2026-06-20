@@ -63,7 +63,7 @@ SPEED_FAR          = 0.55
 SPEED_NEAR         = 0.35
 DIST_SLOW_MM       = 100.0   # PnP z 기준 감속 전환 거리
 AREA_SLOW_THRES    = 0.20    # 면적비 기준 감속 (PnP 없을 때)
-AREA_PEAK_THRES    = 0.04
+AREA_PEAK_THRES    = 0.15
 STEER_GAIN         = 0.015
 CONFIRM_FRAMES     = 4       # 종이 안 보임 확인용 깜빡임 필터
 PIVOT_SPEED        = 0.20    # 4꼭짓점 미확보 시 곡선 선회 최소 전진 속도
@@ -739,24 +739,16 @@ def main():
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
             else:
                 on_zone_count += 1
-                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} pk={peak_area_r:.2f}",
-                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 180), 2)
+                ser.write(b"S\n")
+                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
                 print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count}")
                 if on_zone_count >= CONFIRM_FRAMES:
-                    if peak_area_r >= AREA_SLOW_THRES:
-                        # 충분히 가까이 접근했을 때만 정지
-                        state = 'STOP'; stop_start = time.time()
-                        ser.write(b"S\n")
-                        print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f}")
-                        cv2.imshow('Robot View', vis); cv2.waitKey(1)
-                        continue
-                    else:
-                        # 피크가 작았음(멀리서 본 것) → 계속 직진 접근
-                        on_zone_count = 0
-                        ser.write(f"F {last_steer:.2f} {PIVOT_SPEED:.2f}\n".encode())
-                        print(f"  [NEAR-FWD] {color.upper()} pk={peak_area_r:.2f} 아직 멀음 → 직진")
-                else:
+                    state = 'STOP'; stop_start = time.time()
                     ser.write(b"S\n")
+                    print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f}")
+                    cv2.imshow('Robot View', vis); cv2.waitKey(1)
+                    continue
 
         # ③ 미탐지 → VFH 탐색 ─────────────────────────────────────────────
         else:
