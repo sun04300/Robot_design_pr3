@@ -63,7 +63,7 @@ SPEED_FAR          = 0.55
 SPEED_NEAR         = 0.35
 DIST_SLOW_MM       = 100.0   # PnP z 기준 감속 전환 거리
 AREA_SLOW_THRES    = 0.20    # 면적비 기준 감속 (PnP 없을 때)
-AREA_PEAK_THRES    = 0.15
+AREA_PEAK_THRES    = 0.20
 STEER_GAIN         = 0.015
 CONFIRM_FRAMES     = 4       # 종이 안 보임 확인용 깜빡임 필터
 PIVOT_SPEED        = 0.20    # 4꼭짓점 미확보 시 곡선 선회 최소 전진 속도
@@ -696,14 +696,23 @@ def main():
                                 (fw // 2 - 80, 38),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
                 else:
-                    # 부분 뷰 → 곡선 선회 접근
-                    steer   = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
-                    speed   = PIVOT_SPEED
-                    arrow   = '→' if steer > 0 else '←'
-                    log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"CURVE{arrow}  A={area_r:.3f}",
-                                (fw // 2 - 80, 38),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
+                    # 부분 뷰 → 중앙 정렬 여부에 따라 속도 분기
+                    steer = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
+                    if abs(steer) < 0.5:
+                        # 거의 정면 → 정상 속도로 직진 접근
+                        speed   = _speed_limit(SPEED_FAR)
+                        log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
+                        cv2.putText(vis, f"FWD-NQ  A={area_r:.3f}",
+                                    (fw // 2 - 80, 38),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 100), 2)
+                    else:
+                        # 옆으로 치우침 → 최소 전진 + 최대 조향 곡선
+                        speed   = PIVOT_SPEED
+                        arrow   = '→' if steer > 0 else '←'
+                        log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
+                        cv2.putText(vis, f"CURVE{arrow}  A={area_r:.3f}",
+                                    (fw // 2 - 80, 38),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
             last_steer     = steer
             smoothed_steer = steer  # 강탐지 시 평활화 즉시 동기화
