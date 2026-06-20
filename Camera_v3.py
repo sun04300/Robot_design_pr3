@@ -475,6 +475,7 @@ def main():
     last_steer     = 0.0
     area_peak_seen = False
     peak_area_r    = 0.0
+    last_pivot_dir = 1.0   # 진동 방지용 마지막 pivot 방향
 
     print("=" * 65)
     print("  Camera_v3  |  color_v2 최신 색상 + VFH LiDAR 통합")
@@ -537,6 +538,7 @@ def main():
                     on_zone_count  = 0
                     area_peak_seen = False
                     peak_area_r    = 0.0
+                    last_pivot_dir = 1.0
                     last_seen      = time.time()
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
@@ -553,15 +555,16 @@ def main():
             cnt       = det['contour']
             area_r    = det['area'] / (fw * fh)
 
-            if area_r > AREA_PEAK_THRES:
-                area_peak_seen = True
-                peak_area_r    = max(peak_area_r, area_r)
-
-            # 4꼭짓점 자연 추출 시도
+            # 4꼭짓점 자연 추출 시도 (area_peak_seen 판단 전에 먼저 실행)
             quad = _try_quad(cnt)
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist, quad_pts=quad) \
                    if quad is not None else None
             pivot_dir = None   # None → F 명령 / 비-None → T 피벗 명령
+
+            # 4꼭짓점이 실제로 보일 때만 피크 기록 (부분 뷰 오탐 방지)
+            if quad is not None and area_r > AREA_PEAK_THRES:
+                area_peak_seen = True
+                peak_area_r    = max(peak_area_r, area_r)
 
             if pose is not None:
                 # ── PnP 성공: 4꼭짓점 기반 정밀 조향 ──────────────────
@@ -592,7 +595,7 @@ def main():
                 _draw_center(vis, int(ctr_x), int(ctr_y), (0, 200, 200))
 
             else:
-                # ── 4꼭짓점 미검출 ───────────────────────────────────────
+                # ── 4꼭짓점 미검출 → 항상 pivot (4꼭짓점 확보될 때까지) ──
                 M_c   = cv2.moments(cnt)
                 ctr_x = M_c['m10'] / M_c['m00'] if M_c['m00'] > 0 else fw / 2
                 ctr_y = M_c['m01'] / M_c['m00'] if M_c['m00'] > 0 else fh / 2
@@ -600,25 +603,17 @@ def main():
                 if M_c['m00'] > 0:
                     _draw_center(vis, int(ctr_x), int(ctr_y), (255, 200, 0))
 
-                if not area_peak_seen:
-                    # 피크 전: 정지 후 색지 방향으로 제자리 선회 → 4꼭짓점 확보
-                    pivot_dir = 1.0 if offset > 0 else -1.0
-                    steer  = 0.0
-                    speed  = 0.0
-                    arrow  = '→' if pivot_dir > 0 else '←'
-                    log_msg = f"PIVOT{arrow} off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"PIVOT{arrow}  A={area_r:.3f}",
-                                (fw // 2 - 80, 38),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
-                else:
-                    # 피크 후(이미 근접): 선회 대신 윤곽선 중심으로 계속 전진
-                    steer  = float(np.clip(offset * 0.45, -MAX_STEER, MAX_STEER))
-                    cam_spd = SPEED_NEAR
-                    speed   = min(cam_spd, vfh_spd) if lidar_ready else cam_spd
-                    log_msg = f"contour off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"CONTOUR A={area_r:.3f}",
-                                (fw // 2 - 80, 38),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
+                # dead zone 0.10: 중앙 근처 흔들림 시 마지막 방향 유지
+                if abs(offset) > 0.10:
+                    last_pivot_dir = 1.0 if offset > 0 else -1.0
+                pivot_dir = last_pivot_dir
+                steer  = 0.0
+                speed  = 0.0
+                arrow  = '→' if pivot_dir > 0 else '←'
+                log_msg = f"PIVOT{arrow} off={offset:+.2f} area={area_r:.2f}"
+                cv2.putText(vis, f"PIVOT{arrow}  A={area_r:.3f}",
+                            (fw // 2 - 80, 38),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
             last_steer = steer
             if pivot_dir is not None:
