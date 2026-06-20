@@ -184,6 +184,10 @@ def _compute_vfh(hist, has_pt):
     if not any(has_pt):
         return 'FWD', 0.0, 0.70, 1.0, emg, front
 
+    # 감지 범위(DETECT) 내 장애물 없음 → 직진
+    if not any(has_pt[i] and hist[i] <= DETECT for i in range(N_BINS)):
+        return 'FWD', 0.0, 0.45, 1.0, emg, front
+
     gaps = _find_gaps(hist, has_pt)
     best = _best_gap(gaps)
 
