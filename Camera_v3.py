@@ -699,8 +699,8 @@ def main():
                     # 부분 뷰 → 중앙 정렬 여부에 따라 속도 분기
                     steer = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
                     if abs(steer) < 0.5:
-                        # 거의 정면 → 정상 속도로 직진 접근
-                        speed   = _speed_limit(SPEED_FAR)
+                        # 거의 정면 → SPEED_NEAR로 접근 (급가속 오버슈트 방지)
+                        speed   = _speed_limit(SPEED_NEAR)
                         log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
                         cv2.putText(vis, f"FWD-NQ  A={area_r:.3f}",
                                     (fw // 2 - 80, 38),
