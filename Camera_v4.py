@@ -28,7 +28,10 @@ import cv2
 import numpy as np
 
 from color_v2 import (load_calibration,
-                       get_red_mask, get_yellow_mask, get_blue_mask)
+                       get_red_mask, get_yellow_mask, get_blue_mask,
+                       RED_LOWER1, RED_UPPER1, RED_LOWER2, RED_UPPER2,
+                       YELLOW_LOWER, YELLOW_UPPER,
+                       BLUE_LOWER, BLUE_UPPER)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,7 +298,7 @@ def _detect_paper(frame, color: str):
     """
     640×480 프레임에서 색지 탐지.
     반환: None  또는
-          {'cx','cy','area_r','contour','method'('RECT'|'DIST'),'ar'}
+          {'cx','cy','area_r','contour','ar','rect'}
     """
     hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_mask(hsv, color)
@@ -308,30 +311,26 @@ def _detect_paper(frame, color: str):
     cnt    = max(cnts, key=cv2.contourArea)
     area_r = cv2.contourArea(cnt) / (CAM_W * CAM_H)
 
-    rect           = cv2.minAreaRect(cnt)
-    (cx, cy), (rw, rh), _ = rect
+    rect              = cv2.minAreaRect(cnt)
+    (rx, ry), (rw, rh), _ = rect
 
     if rw < 1 or rh < 1:
         return None
 
     ar = max(rw, rh) / min(rw, rh)
 
-    if AR_MIN <= ar <= AR_MAX:
-        method = 'RECT'
+    # 무게중심 사용 — AR 변화에 무관하게 안정적
+    M = cv2.moments(cnt)
+    if M['m00'] > 0:
+        cx = M['m10'] / M['m00']
+        cy = M['m01'] / M['m00']
     else:
-        # 가림/왜곡 심함 → 마스크 내 거리 변환 최대점(가장 안쪽)을 중심으로
-        roi = np.zeros((CAM_H, CAM_W), dtype=np.uint8)
-        cv2.drawContours(roi, [cnt], -1, 255, -1)
-        dist = cv2.distanceTransform(roi, cv2.DIST_L2, 5)
-        _, _, _, max_loc = cv2.minMaxLoc(dist)
-        cx, cy = float(max_loc[0]), float(max_loc[1])
-        method = 'DIST'
+        cx, cy = rx, ry
 
     return {
         'cx': cx, 'cy': cy,
         'area_r': area_r,
         'contour': cnt,
-        'method': method,
         'ar': ar,
         'rect': rect,
     }
@@ -342,8 +341,15 @@ def _weak_detect(frame, color: str):
     약탐지: 낮은 면적 임계값으로 종이 일부만 보여도 중심 반환.
     반환: None 또는 (contour, cx, cy)
     """
-    hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = _get_mask(hsv, color)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    # 모폴로지 없이 raw inRange — 작은/먼 blob도 방향 탐지 가능
+    if color == 'red':
+        mask = cv2.bitwise_or(cv2.inRange(hsv, RED_LOWER1, RED_UPPER1),
+                              cv2.inRange(hsv, RED_LOWER2, RED_UPPER2))
+    elif color == 'yellow':
+        mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    else:
+        mask = cv2.inRange(hsv, BLUE_LOWER, BLUE_UPPER)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = [c for c in cnts if cv2.contourArea(c) > WEAK_MIN_AREA]
     if not cnts:
@@ -501,7 +507,6 @@ def main():
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
-            method    = det['method']
             ar        = det['ar']
 
             dcx, dcy = int(cx), int(cy)
@@ -514,7 +519,7 @@ def main():
                 steer   = float(np.clip(offset * 0.5, -MAX_STEER, MAX_STEER))
                 speed   = _speed_limit(SPEED_NEAR)
                 log_msg = f"CLOSE-FWD off={offset:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f} [{method}]",
+                cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f}",
                             (CAM_W // 2 - 160, 44),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
 
@@ -523,14 +528,14 @@ def main():
                 if abs(steer) < 0.5:
                     speed   = _speed_limit(SPEED_NEAR)
                     log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"FWD-NQ A={area_r:.2f} [{method}]",
+                    cv2.putText(vis, f"FWD-NQ A={area_r:.2f}",
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 100), 2)
                 else:
                     speed   = PIVOT_SPEED
                     arrow   = '→' if steer > 0 else '←'
                     log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"CURVE{arrow} A={area_r:.2f} [{method}]",
+                    cv2.putText(vis, f"CURVE{arrow} A={area_r:.2f}",
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
@@ -540,11 +545,11 @@ def main():
             cv2.putText(vis, f"AR={ar:.1f}", (dcx + 10, dcy - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 180, 255), 1)
 
-            last_steer     = steer
-            smoothed_steer = steer
+            smoothed_steer = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
+            last_steer     = smoothed_steer
             if speed > 0:
-                ser.write(f"F {steer:.2f} {speed:.2f}\n".encode())
-                print(f"  [SEEK] {color.upper()} {log_msg} st={steer:+.2f} spd={speed:.2f}")
+                ser.write(f"F {smoothed_steer:.2f} {speed:.2f}\n".encode())
+                print(f"  [SEEK] {color.upper()} {log_msg} st={smoothed_steer:+.2f} spd={speed:.2f}")
             else:
                 ser.write(b"S\n")
                 print(f"  [SEEK] {color.upper()} {log_msg} (속도제한 0)")
