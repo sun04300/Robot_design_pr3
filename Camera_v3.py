@@ -404,11 +404,12 @@ def get_weak_contour(hsv, color: str):
     return max(cnts, key=cv2.contourArea) if cnts else None
 
 
-def _contour_offset(cnt, frame_w: int) -> float:
+def _contour_offset(cnt, frame_w: int, opt_cx: float = None) -> float:
     M = cv2.moments(cnt)
     if M['m00'] == 0:
         return 0.0
-    return (M['m10'] / M['m00'] - frame_w / 2) / (frame_w / 2)
+    center = opt_cx if opt_cx is not None else frame_w / 2
+    return (M['m10'] / M['m00'] - center) / (frame_w / 2)
 
 
 def _draw_center(vis, cx: int, cy: int, color):
@@ -447,6 +448,9 @@ def main():
     else:
         pnp_mat  = cam_mat
         pnp_dist = dist_coeffs if dist_coeffs is not None else np.zeros((4, 1))
+
+    # 캘리브레이션 기준 광학 중심 x — _contour_offset 편향 보정
+    opt_cx = float(pnp_mat[0, 2]) if pnp_mat is not None else fw / 2.0
 
     def _cleanup():
         try:
@@ -589,7 +593,7 @@ def main():
             weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
-                weak_offset = _contour_offset(weak_cnt, fw)
+                weak_offset = _contour_offset(weak_cnt, fw, opt_cx)
                 steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
                                             -MAX_STEER, MAX_STEER))
                 last_steer  = steer
@@ -623,7 +627,7 @@ def main():
             weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
-                weak_offset = _contour_offset(weak_cnt, fw)
+                weak_offset = _contour_offset(weak_cnt, fw, opt_cx)
                 steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
                                             -MAX_STEER, MAX_STEER))
                 last_steer  = steer
@@ -639,21 +643,15 @@ def main():
                 print(f"  [WEAK] {color.upper()} off={weak_offset:+.2f} steer={steer:+.2f}")
             else:
                 elapsed = time.time() - last_seen
-                if elapsed < SEARCH_TIMEOUT:
-                    ser.write(b"S\n")
-                    cv2.putText(vis, f"WAIT {elapsed:.1f}s",
-                                (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.55, (100, 100, 255), 2)
+                if lidar_ready:
+                    log = _vfh_drive(ser, hist, has_pt)
                 else:
-                    if lidar_ready:
-                        log = _vfh_drive(ser, hist, has_pt)
-                    else:
-                        ser.write(b"S\n")
-                        log = "NO_LIDAR"
-                    cv2.putText(vis, f"VFH {log}",
-                                (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.50, (100, 200, 255), 2)
-                    print(f"  [VFH] {color.upper()} {elapsed:.1f}s → {log}")
+                    ser.write(b"F 0.00 0.35\n")
+                    log = "FWD_SLOW"
+                cv2.putText(vis, f"SEARCH {log}",
+                            (5, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.50, (100, 200, 255), 2)
+                print(f"  [SEARCH] {color.upper()} {elapsed:.1f}s → {log}")
 
         # ── 공통 HUD ──────────────────────────────────────────────────────
         emg_txt = f" EMG:{_nearest(hist, has_pt, 0.0, 80):.0f}mm" if lidar_ready else ""
