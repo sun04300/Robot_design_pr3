@@ -353,18 +353,29 @@ def _extract_quad(contour: np.ndarray) -> np.ndarray:
     return _order_points(best)
 
 
-def _try_quad(contour: np.ndarray):
-    """approxPolyDP로 자연스럽게 4꼭짓점을 찾으면 반환, 실패 시 None."""
+_EDGE_MARGIN = 8  # 화면 경계에서 이 픽셀 이내 꼭짓점은 부분 뷰로 간주
+
+def _try_quad(contour: np.ndarray, frame_w: int = 0, frame_h: int = 0):
+    """approxPolyDP로 자연스럽게 4꼭짓점을 찾으면 반환, 실패 시 None.
+    frame_w/frame_h 지정 시 화면 경계 근처 꼭짓점 포함이면 None 반환.
+    """
     hull = cv2.convexHull(contour)
     peri = cv2.arcLength(hull, True)
     for eps_ratio in np.arange(0.01, 0.40, 0.01):
         approx = cv2.approxPolyDP(hull, float(eps_ratio) * peri, True)
         pts    = approx.reshape(-1, 2).astype(np.float32)
         if len(pts) == 4:
+            if frame_w > 0 and frame_h > 0:
+                if ((pts[:, 0] < _EDGE_MARGIN).any() or
+                        (pts[:, 0] > frame_w - _EDGE_MARGIN).any() or
+                        (pts[:, 1] < _EDGE_MARGIN).any() or
+                        (pts[:, 1] > frame_h - _EDGE_MARGIN).any()):
+                    return None  # 경계 닿은 꼭짓점 → 부분 뷰
             return _order_points(pts)
         if len(pts) < 4:
             break
     return None
+
 
 
 def solve_paper_pose(contour, cam_mat, dist_coeffs, quad_pts=None):
@@ -556,7 +567,7 @@ def main():
             area_r    = det['area'] / (fw * fh)
 
             # 4꼭짓점 자연 추출 시도 (area_peak_seen 판단 전에 먼저 실행)
-            quad = _try_quad(cnt)
+            quad = _try_quad(cnt, fw, fh)
             pose = solve_paper_pose(cnt, pnp_mat, pnp_dist, quad_pts=quad) \
                    if quad is not None else None
             pivot_dir = None   # None → F 명령 / 비-None → T 피벗 명령
@@ -675,20 +686,19 @@ def main():
             weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
+                # 피크 미확인 상태에서 부분 탐지 → 전진 대신 pivot
                 weak_offset = _contour_offset(weak_cnt, fw, opt_cx)
-                steer       = float(np.clip(weak_offset * WEAK_STEER_GAIN,
-                                            -MAX_STEER, MAX_STEER))
-                last_steer  = steer
-                last_seen   = time.time()
-                ser.write(f"F {steer:.2f} {WEAK_SPEED:.2f}\n".encode())
+                if abs(weak_offset) > 0.10:
+                    last_pivot_dir = 1.0 if weak_offset > 0 else -1.0
+                last_seen = time.time()
+                ser.write(f"T {last_pivot_dir:.2f}\n".encode())
                 cv2.drawContours(vis, [weak_cnt], -1, (180, 180, 0), 1)
-                M_w = cv2.moments(weak_cnt)
-                if M_w['m00'] > 0:
-                    _draw_center(vis, int(M_w['m10'] / M_w['m00']),
-                                 int(M_w['m01'] / M_w['m00']), (180, 180, 0))
-                cv2.putText(vis, f"WEAK {color.upper()} off={weak_offset:+.2f}",
+                x_bb, y_bb, w_bb, h_bb = cv2.boundingRect(weak_cnt)
+                _draw_center(vis, x_bb + w_bb // 2, y_bb + h_bb // 2, (180, 180, 0))
+                arrow = '→' if last_pivot_dir > 0 else '←'
+                cv2.putText(vis, f"WEAK-PIVOT{arrow} off={weak_offset:+.2f}",
                             (5, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 0), 2)
-                print(f"  [WEAK] {color.upper()} off={weak_offset:+.2f} steer={steer:+.2f}")
+                print(f"  [WEAK] {color.upper()} pivot{arrow} off={weak_offset:+.2f}")
             else:
                 elapsed = time.time() - last_seen
                 if vfh_act == 'BACK':
