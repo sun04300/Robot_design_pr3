@@ -647,8 +647,8 @@ def main():
             pose = solve_paper_pose_with_memory(cnt, pnp_mat, pnp_dist, quad_pts=quad) \
                    if quad is not None else None
 
-            # 4꼭짓점이 실제로 보일 때만 피크 기록 (부분 뷰 오탐 방지)
-            if quad is not None and area_r > AREA_PEAK_THRES:
+            # 피크 기록: quad 확인 시 OR 면적이 충분히 커서 확실히 가까울 때
+            if area_r > AREA_PEAK_THRES and (quad is not None or area_r > AREA_SLOW_THRES):
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
@@ -679,7 +679,7 @@ def main():
                 _draw_center(vis, int(ctr_x), int(ctr_y), (0, 200, 200))
 
             else:
-                # ── 4꼭짓점 미검출 → 최대 조향 + 최소 전진 곡선 접근 ──
+                # ── 4꼭짓점 미검출 ──
                 M_c   = cv2.moments(cnt)
                 ctr_x = M_c['m10'] / M_c['m00'] if M_c['m00'] > 0 else fw / 2
                 ctr_y = M_c['m01'] / M_c['m00'] if M_c['m00'] > 0 else fh / 2
@@ -687,13 +687,23 @@ def main():
                 if M_c['m00'] > 0:
                     _draw_center(vis, int(ctr_x), int(ctr_y), (255, 200, 0))
 
-                steer = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
-                speed = PIVOT_SPEED
-                arrow = '→' if steer > 0 else '←'
-                log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"CURVE{arrow}  A={area_r:.3f}",
-                            (fw // 2 - 80, 38),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
+                if area_r > AREA_SLOW_THRES:
+                    # 매우 가까움(면적>20%) → 부드럽게 직진 진입
+                    steer   = float(np.clip(offset * 0.5, -MAX_STEER, MAX_STEER))
+                    speed   = _speed_limit(SPEED_NEAR)
+                    log_msg = f"CLOSE-FWD off={offset:+.2f} area={area_r:.2f}"
+                    cv2.putText(vis, f"CLOSE-FWD A={area_r:.3f}",
+                                (fw // 2 - 80, 38),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
+                else:
+                    # 부분 뷰 → 곡선 선회 접근
+                    steer   = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
+                    speed   = PIVOT_SPEED
+                    arrow   = '→' if steer > 0 else '←'
+                    log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
+                    cv2.putText(vis, f"CURVE{arrow}  A={area_r:.3f}",
+                                (fw // 2 - 80, 38),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
             last_steer     = steer
             smoothed_steer = steer  # 강탐지 시 평활화 즉시 동기화
