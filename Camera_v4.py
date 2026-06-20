@@ -298,7 +298,7 @@ def _detect_paper(frame, color: str):
     """
     640×480 프레임에서 색지 탐지.
     반환: None  또는
-          {'cx','cy','area_r','contour','ar','rect'}
+          {'cx','cy','area_r','contour'}
     """
     hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_mask(hsv, color)
@@ -311,28 +311,16 @@ def _detect_paper(frame, color: str):
     cnt    = max(cnts, key=cv2.contourArea)
     area_r = cv2.contourArea(cnt) / (CAM_W * CAM_H)
 
-    rect              = cv2.minAreaRect(cnt)
-    (rx, ry), (rw, rh), _ = rect
-
-    if rw < 1 or rh < 1:
-        return None
-
-    ar = max(rw, rh) / min(rw, rh)
-
-    # 무게중심 사용 — AR 변화에 무관하게 안정적
     M = cv2.moments(cnt)
-    if M['m00'] > 0:
-        cx = M['m10'] / M['m00']
-        cy = M['m01'] / M['m00']
-    else:
-        cx, cy = rx, ry
+    if M['m00'] == 0:
+        return None
+    cx = M['m10'] / M['m00']
+    cy = M['m01'] / M['m00']
 
     return {
         'cx': cx, 'cy': cy,
         'area_r': area_r,
         'contour': cnt,
-        'ar': ar,
-        'rect': rect,
     }
 
 
@@ -507,9 +495,7 @@ def main():
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
-            ar        = det['ar']
-
-            dcx, dcy = int(cx), int(cy)
+            dcx, dcy  = int(cx), int(cy)
 
             if area_r >= AREA_PEAK_THRES:
                 area_peak_seen = True
@@ -539,11 +525,9 @@ def main():
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
-            box_pts = cv2.boxPoints(det['rect']).astype(np.int32)
-            cv2.polylines(vis, [box_pts], True, (0, 180, 255), 2)
+            x, y, w, h = cv2.boundingRect(det['contour'])
+            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 180, 255), 2)
             _draw_ctr(vis, dcx, dcy, (0, 180, 255))
-            cv2.putText(vis, f"AR={ar:.1f}", (dcx + 10, dcy - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 180, 255), 1)
 
             smoothed_steer = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
             last_steer     = smoothed_steer
