@@ -647,8 +647,8 @@ def main():
             pose = solve_paper_pose_with_memory(cnt, pnp_mat, pnp_dist, quad_pts=quad) \
                    if quad is not None else None
 
-            # 피크 기록: quad 확인 시 OR 면적이 충분히 커서 확실히 가까울 때
-            if area_r > AREA_PEAK_THRES and (quad is not None or area_r > AREA_SLOW_THRES):
+            # 강탐지기(min_area=1000)가 이미 노이즈 차단 → area 기준만으로 피크 기록
+            if area_r > AREA_PEAK_THRES:
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
@@ -720,6 +720,7 @@ def main():
             weak_cnt = get_weak_contour(hsv_u, color)
 
             if weak_cnt is not None:
+                on_zone_count  = 0          # 약한 윤곽 보이면 카운터 리셋 (조기 정지 방지)
                 weak_offset    = _contour_offset(weak_cnt, fw, opt_cx)
                 steer          = float(np.clip(weak_offset * WEAK_STEER_GAIN,
                                                -MAX_STEER, MAX_STEER))

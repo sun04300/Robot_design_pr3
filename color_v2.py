@@ -36,10 +36,10 @@ RED_UPPER1  = np.array([ 10, 255, 255])
 RED_LOWER2  = np.array([150,  70,  80])  # 핑크-마젠타 (H 고주파 끝)
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: S_min 80→120 — Kobuki 박스 황갈색(S≈60~100) 오탐 차단
-#  실제 색지: H≈24 S≈149 V≈215 → S_min=120에서도 충분히 검출됨
-#  H_min 18→22: 갈색(H<20) 영역 추가 차단
-YELLOW_LOWER = np.array([ 22, 120, 150])
+# YELLOW: S_min 100, V_min 120 — 먼 거리/저조도에서 더 일찍 인식
+#  Kobuki 박스(S≈60~100)는 S_min=100에서도 차단됨
+#  H_min 22: 갈색(H<20) 영역 차단 유지
+YELLOW_LOWER = np.array([ 22, 100, 120])
 YELLOW_UPPER = np.array([ 35, 255, 255])
 
 # BLUE: S_min 80→110, V_min 70→90 — Kobuki 검은 패널(S≈0~60, V≈20~60) 오탐 차단
