@@ -29,7 +29,7 @@ import numpy as np
 
 from color_v2 import (load_calibration,
                        get_red_mask, get_yellow_mask, get_blue_mask,
-                       RED_LOWER1, RED_UPPER1, RED_LOWER2, RED_UPPER2,
+                       RED_LOWER2, RED_UPPER2,
                        YELLOW_LOWER, YELLOW_UPPER,
                        BLUE_LOWER, BLUE_UPPER)
 
@@ -47,7 +47,7 @@ CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # ─────────────────────────────────────────────────────────────────────────────
 #  탐지 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
-MIN_AREA       = 1000   # 강탐지 최소 컨투어 면적 (640×480 기준 px²)
+MIN_AREA       = 800    # 강탐지 최소 컨투어 면적 (640×480 기준 px²)
 WEAK_MIN_AREA  = 200    # 약탐지 최소 컨투어 면적
 AR_MIN         = 0.5    # minAreaRect 종횡비 정상 범위 하한
 AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
@@ -62,11 +62,11 @@ PIVOT_SPEED       = 0.20
 WEAK_SPEED        = 0.35
 NUDGE_SPEED       = 0.25   # 종이 위 비가시 구간 저속 전진
 WEAK_STEER_GAIN   = 0.60
-AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
-AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
-CONFIRM_FRAMES    = 10     # INVISIBLE 확인용 프레임 수
+AREA_SLOW_THRES   = 0.12   # 근접 판단 면적비 — 카메라 높이 올림 반영 (0.20→0.12)
+AREA_PEAK_THRES   = 0.12   # area_peak_seen 세팅 면적비 — 동일 이유
+CONFIRM_FRAMES    = 18     # 비가시 구간 전진 프레임 — 깊이 확보용 (10→18, ≈0.6s)
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
-COLOR_MEMORY_TIME = 2.00   # 색 소실 후 조향 유지 시간 (초) — 노란색 1m거리 탐지 후 0.5m 더 접근
+COLOR_MEMORY_TIME = 1.50   # 마스크 정확도 향상으로 긴 메모리 불필요 (2.0→1.5)
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
 
 TARGETS = ['red', 'yellow', 'blue']
@@ -331,9 +331,9 @@ def _weak_detect(hsv: np.ndarray, color: str):
     반환: None 또는 (contour, cx, cy)
     """
     # 모폴로지 없이 raw inRange — 작은/먼 blob도 방향 탐지 가능
+    # RED1(H=0-10)은 갈색 박스 오탐 → RED2(H=150-179)만 사용
     if color == 'red':
-        mask = cv2.bitwise_or(cv2.inRange(hsv, RED_LOWER1, RED_UPPER1),
-                              cv2.inRange(hsv, RED_LOWER2, RED_UPPER2))
+        mask = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
     elif color == 'yellow':
         mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
     else:
@@ -432,7 +432,7 @@ def main():
     last_obs_steer        = 0.0
     obs_active            = False
     obs_clear_time        = None
-    strong_det_count      = 0
+    mem_invis_count       = 0
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
@@ -484,7 +484,7 @@ def main():
                     last_obs_steer         = 0.0
                     obs_active             = False
                     obs_clear_time         = None
-                    strong_det_count       = 0
+                    mem_invis_count        = 0
                     last_seen              = time.time()
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
@@ -504,12 +504,12 @@ def main():
             offset    = _offset(cx)
             dcx, dcy  = int(cx), int(cy)
 
-            strong_det_count += 1
-            if area_r >= AREA_PEAK_THRES or strong_det_count >= 5:
+            mem_invis_count = 0
+            if area_r >= AREA_PEAK_THRES:
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
-            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.15):
+            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.09):
                 # CLOSE-FWD: 최초 진입 시 조향 고정
                 if not approach_steer_locked:
                     if prev_area_r > 0.05:
@@ -562,7 +562,7 @@ def main():
 
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
-            strong_det_count = 0
+            mem_invis_count = 0
             prev_area_r = 0.0
             w = _weak_detect(hsv, color)
             if w is not None:
@@ -597,11 +597,11 @@ def main():
 
         # ③ 미탐지 → VFH 탐색 ────────────────────────────────────────────
         else:
-            strong_det_count = 0
             prev_area_r   = 0.0
             on_zone_count = max(0, on_zone_count - 1)
             w = _weak_detect(hsv, color)
             if w is not None:
+                mem_invis_count = 0
                 cnt_w, wcx, wcy = w
                 weak_offset = _offset(wcx)
                 w_steer     = float(np.clip(weak_offset * 3.0, -MAX_STEER, MAX_STEER))
@@ -615,15 +615,24 @@ def main():
             else:
                 elapsed = time.time() - last_seen
                 if elapsed < COLOR_MEMORY_TIME:
+                    mem_invis_count += 1
                     steer_cmd      = STEER_SMOOTH_ALPHA * last_steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
                     smoothed_steer = steer_cmd
                     mem_speed      = _speed_limit(SPEED_NEAR)
                     ser.write(f"F {steer_cmd:.2f} {mem_speed:.2f}\n".encode()
                               if mem_speed > 0 else b"S\n")
-                    cv2.putText(vis, f"MEM {elapsed:.2f}s st={steer_cmd:+.2f}",
+                    cv2.putText(vis, f"MEM {elapsed:.2f}s cnt:{mem_invis_count} st={steer_cmd:+.2f}",
                                 (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 220, 100), 2)
-                    print(f"  [MEM] {color.upper()} t={elapsed:.2f}s st={steer_cmd:+.2f}")
+                    print(f"  [MEM] {color.upper()} t={elapsed:.2f}s cnt={mem_invis_count} st={steer_cmd:+.2f}")
+                    if mem_invis_count >= CONFIRM_FRAMES:
+                        state = 'STOP'; stop_start = time.time()
+                        ser.write(b"S\n")
+                        print(f"  🎯 {color.upper()} 도달! (MEM)")
+                        cv2.imshow('Robot View', vis)
+                        cv2.waitKey(1)
+                        continue
                 else:
+                    mem_invis_count = 0
                     obstacle_now = ls['has_data'] and ls['emg_near'] < DETECT
                     if obstacle_now:
                         last_obs_steer = float(np.clip(
