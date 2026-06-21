@@ -532,7 +532,7 @@ def main():
                 approach_steer_locked = False
                 steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
                 if abs(steer) < 0.4:
-                    speed   = _speed_limit(SPEED_NEAR)
+                    speed   = SPEED_NEAR   # FWD-NQ: 감속 없이 접근 (EMERGENCY 200mm 하드스톱은 유지)
                     log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"FWD-NQ A={area_r:.2f}",
                                 (CAM_W // 2 - 140, 44),
