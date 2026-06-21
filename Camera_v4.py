@@ -66,6 +66,7 @@ AREA_SLOW_THRES   = 0.12
 AREA_PEAK_THRES   = 0.12
 CONFIRM_FRAMES    = 12
 STOP_DURATION     = 1.1
+SCAN_TIMEOUT      = 4.0   # 정지 후 360° 탐색 최대 시간 (초)
 COLOR_MEMORY_TIME = 1.50
 STEER_SMOOTH_ALPHA = 0.45
 
@@ -414,6 +415,7 @@ def main():
     obs_active            = False
     obs_clear_time        = None
     mem_invis_count       = 0
+    scan_start            = None
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
@@ -441,6 +443,28 @@ def main():
 
         color = TARGETS[target_idx]
 
+        # ── SCAN: 정지 후 360° 회전 탐색 ─────────────────────────────────
+        if state == 'SCAN':
+            det_s = _detect_paper(hsv, color)
+            w_s   = _weak_detect(hsv, color)
+            if det_s is not None or w_s is not None:
+                state = 'SEEK'
+                ser.write(b"S\n")
+                src = "STRONG" if det_s is not None else "WEAK"
+                print(f"  [SCAN] {color.upper()} 발견({src}) → SEEK")
+            elif time.time() - scan_start >= SCAN_TIMEOUT:
+                state = 'SEEK'
+                ser.write(b"S\n")
+                print(f"  [SCAN] {color.upper()} 미발견 → SEEK(VFH)")
+            else:
+                elapsed_s = time.time() - scan_start
+                ser.write(f"T +1.00 {PIVOT_SPEED:.2f}\n".encode())
+                cv2.putText(vis, f"SCAN {color.upper()} {elapsed_s:.1f}s/{SCAN_TIMEOUT:.0f}s",
+                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 180, 0), 2)
+                cv2.imshow('Robot View', vis)
+                cv2.waitKey(1)
+                continue
+
         # ── STOP 대기 ─────────────────────────────────────────────────────
         if state == 'STOP':
             ser.write(b"S\n")
@@ -454,7 +478,8 @@ def main():
             if elapsed >= STOP_DURATION:
                 if target_idx < len(TARGETS) - 1:
                     target_idx            += 1
-                    state                  = 'SEEK'
+                    state                  = 'SCAN'
+                    scan_start             = time.time()
                     on_zone_count          = 0
                     area_peak_seen         = False
                     peak_area_r            = 0.0
@@ -466,7 +491,7 @@ def main():
                     obs_clear_time         = None
                     mem_invis_count        = 0
                     last_seen              = time.time() - COLOR_MEMORY_TIME - 1.0
-                    print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
+                    print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()} SCAN 시작")
                 else:
                     state = 'DONE'
                     print("  ✅ 전체 미션 완료!")
@@ -497,13 +522,15 @@ def main():
                                             if prev_area_r > 0.05 else 0.0
                     approach_steer_locked = True
 
-                ls_cl  = _lidar_read()
-                obs_cl = ls_cl['has_data'] and ls_cl['front_near'] < DETECT
+                ls_cl     = _lidar_read()
+                obs_cl    = ls_cl['has_data'] and ls_cl['front_near'] < DETECT
+                emg_block = ls_cl['has_data'] and ls_cl['emg_near'] < EMERGENCY
 
-                if obs_cl and ls_cl['vfh_action'] != 'FWD':
+                if emg_block or (obs_cl and ls_cl['vfh_action'] != 'FWD'):
                     approach_steer_locked = False
-                    steer   = float(np.clip(ls_cl['vfh_steer'], -MAX_STEER, MAX_STEER))
-                    speed   = _speed_limit(SPEED_NEAR)
+                    steer          = float(np.clip(ls_cl['vfh_steer'], -MAX_STEER, MAX_STEER))
+                    smoothed_steer = steer   # EMA 잔류 제거 — 즉시 VFH 조향으로 전환
+                    speed          = _speed_limit(SPEED_NEAR)
                     log_msg = f"CLOSE-OBS(VFH) vst={steer:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"CLOSE-OBS A={area_r:.2f}",
                                 (CAM_W // 2 - 160, 44),
