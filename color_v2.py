@@ -35,16 +35,17 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 #  경기 당일 조명이 다르면 HSV_TUNER()로 재조정!
 # ────────────────────────────────────────────────────
 
-# RED1: H=0~7 순수 빨강. S≥165로 Kobuki 박스 로고(H=8~15, S≤152) 차단.
-RED_LOWER1  = np.array([  0, 165,  80])
-RED_UPPER1  = np.array([  7, 255, 255])
-# RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175). S≥100으로 간접광 miss 해소.
-RED_LOWER2  = np.array([165, 100,  80])
+# RED1: H=0~7 — 바닥 타일 오탐 유발로 비활성화 (실제 종이는 H≈171~175)
+RED_LOWER1  = np.array([  0, 165,  80])  # 미사용
+RED_UPPER1  = np.array([  7, 255, 255])  # 미사용
+# RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175). S≥80: 원거리 채도 희석 보완.
+RED_LOWER2  = np.array([165,  80,  80])
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: H=18~32(실측 19~30). S≥50: 바닥 타일(S<30) 안전 차단.
-#  V≥120: 그림자 영역까지 포함. 간접광 miss(image7, S≈75) 해소.
-YELLOW_LOWER = np.array([ 18,  50, 120])
+# YELLOW: H=18~32(실측 19~30).
+#  S≥75: 바닥 무늬(S≈40~65) 차단하면서 간접광 종이(S≈75~) 통과.
+#  V≥130: 음영/각도로 V↓된 케이스(image7 miss) 해소. 바닥(V≈120) 과의 여유=10.
+YELLOW_LOWER = np.array([ 18,  75, 130])
 YELLOW_UPPER = np.array([ 32, 255, 255])
 
 # BLUE: H=100~120(실측 105~118). V_min=100: 박스(V≈104)와 근접하지만
@@ -92,14 +93,12 @@ def load_calibration(pkl_path: str = _DEFAULT_CALIB):
 
 def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     """
-    빨간 종이 마스크 반환. RED1(H=0-7) + RED2(H=165-179) 합산.
-    RED1 S≥165로 Kobuki 박스 로고(H=8-15, S≤152) 오탐 차단.
+    빨간 종이 마스크 반환. RED2(H=165-179)만 사용.
+    종이 실측 H≈171~175. RED1(H=0-7)은 바닥 타일 오탐 유발로 비활성화.
     """
-    raw1 = cv2.inRange(hsv, RED_LOWER1, RED_UPPER1)
-    raw2 = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
-    raw  = cv2.bitwise_or(raw1, raw2)
-    out  = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    raw = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
+    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
     return out
 
 
