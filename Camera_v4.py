@@ -84,13 +84,9 @@ LID_MAX_STEER = 1.2
 ROT_THRESH    = 100.0
 ROBOT_RADIUS  = 90.0
 
-OBS_RETURN_TIME = 10.0   # 장애물 통과 후 복귀 조향 유지 시간 (s)
+OBS_RETURN_TIME = 0.4    # 장애물 통과 후 복귀 조향 유지 시간 (s)
 OBS_RETURN_GAIN = 0.70   # 복귀 조향 계수
 
-OPEN_FIELD_TIMEOUT    = 6.0    # 라이다+카메라 無감지 지속 시간 → 서킷 이탈 판단 (초)
-CIRCUIT_RETURN_TIME   = 2.5    # 180° 복귀 회전 소요 시간 (초, 실측 후 조정)
-VFH_STUCK_CYCLES      = 6      # OBS_RET 연속 발동 횟수 → 벽 순환 막힘 판단
-CIRCUIT_RETURN_COOLDOWN = 10.0 # 복귀 회전 후 재발동 금지 시간 (초)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LiDAR 공유 상태  (Ki+LiDAR_v2 동일)
@@ -438,10 +434,6 @@ def main():
     obs_active            = False
     obs_clear_time        = None
     mem_invis_count       = 0
-    open_field_start      = None   # 열린 공간(서킷 이탈) 진입 시각
-    circuit_return_end    = None   # 복귀 회전 종료 예정 시각
-    last_circuit_return   = None   # 마지막 복귀 회전 완료 시각 (재발동 방지)
-    obs_ret_count         = 0      # OBS_RET 연속 발동 횟수 (벽 순환 감지용)
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
@@ -507,11 +499,7 @@ def main():
 
         # ① 강탐지 ──────────────────────────────────────────────────────
         if det is not None:
-            last_seen             = time.time()
-            open_field_start      = None    # 색지 탐지 → 서킷 이탈 아님
-            circuit_return_end    = None
-            last_circuit_return   = None
-            obs_ret_count         = 0       # 색지 발견 → 벽 순환 카운트 리셋
+            last_seen = time.time()
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
@@ -562,15 +550,12 @@ def main():
                 obs_near = ls_cur['has_data'] and ls_cur['front_near'] < DETECT
 
                 if obs_near:
-                    # 전방 500mm 이내 장애물 → VFH 조향 우선
+                    # 전방 500mm 이내 장애물 → VFH 조향 + VFH 속도(거리 기반 자동 감속)
                     steer = float(np.clip(ls_cur['vfh_steer'], -MAX_STEER, MAX_STEER))
-                    if ls_cur['vfh_action'] == 'FWD':
-                        speed   = SPEED_NEAR               # VFH가 통로 확인 → 속도 유지
-                        log_msg = f"FWD-VFH(pass) vst={steer:+.2f} cam={offset:+.2f}"
-                    else:
-                        speed   = _speed_limit(SPEED_NEAR) # VFH 막힘 → 감속 회피
-                        log_msg = f"FWD-VFH(rot) vst={steer:+.2f} cam={offset:+.2f}"
-                    cv2.putText(vis, f"VFH({ls_cur['vfh_action']}) A={area_r:.2f}",
+                    speed = float(np.clip(ls_cur['vfh_speed'], 0.0, SPEED_FAR))
+                    act   = ls_cur['vfh_action']
+                    log_msg = f"FWD-VFH({act}) vst={steer:+.2f} spd={speed:.2f} cam={offset:+.2f}"
+                    cv2.putText(vis, f"VFH({act}) spd={speed:.2f} A={area_r:.2f}",
                                 (CAM_W // 2 - 160, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 100, 255), 2)
                 elif abs(cam_steer) < 0.4:
@@ -689,7 +674,6 @@ def main():
                     elif obs_active:
                         obs_active     = False
                         obs_clear_time = time.time()
-                        obs_ret_count += 1   # OBS_RET 발동 횟수 누적
 
                     return_elapsed = (time.time() - obs_clear_time) \
                         if obs_clear_time is not None else OBS_RETURN_TIME + 1.0
@@ -705,54 +689,10 @@ def main():
                         print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
                     else:
                         smoothed_steer *= (1.0 - STEER_SMOOTH_ALPHA)
-                        now      = time.time()
-                        in_open  = ls['has_data'] and ls['emg_near'] >= DETECT
-                        cooldown_ok = (last_circuit_return is None or
-                                       now - last_circuit_return >= CIRCUIT_RETURN_COOLDOWN)
-
-                        # 열린 공간 타이머
-                        if in_open:
-                            if open_field_start is None:
-                                open_field_start = now
-                        else:
-                            open_field_start = None
-
-                        # 복귀 회전 트리거 조건
-                        open_overtime = in_open and open_field_start is not None and \
-                                        (now - open_field_start >= OPEN_FIELD_TIMEOUT)
-                        obs_stuck     = obs_ret_count >= VFH_STUCK_CYCLES  # OBS_RET 반복 순환
-                        do_return     = (open_overtime or obs_stuck) and cooldown_ok
-
-                        if circuit_return_end is not None:
-                            if now < circuit_return_end:
-                                # 복귀 회전 중
-                                ser.write(f"T +1.00 {PIVOT_SPEED:.2f}\n".encode())
-                                rem = circuit_return_end - now
-                                reason = "OPEN" if open_overtime else "STUCK"
-                                cv2.putText(vis, f"CIRCUIT-RETURN({reason}) {rem:.1f}s",
-                                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 0, 255), 2)
-                                print(f"  [RETURN] {color.upper()} 복귀 회전 {rem:.1f}s 남음")
-                            else:
-                                # 회전 완료 → 리셋
-                                last_circuit_return = now
-                                circuit_return_end  = None
-                                open_field_start    = None
-                                obs_ret_count       = 0
-                                smoothed_steer      = 0.0
-                        elif do_return:
-                            # 복귀 회전 시작
-                            circuit_return_end = now + CIRCUIT_RETURN_TIME
-                            ser.write(f"T +1.00 {PIVOT_SPEED:.2f}\n".encode())
-                            reason = f"open {now-open_field_start:.0f}s" if open_overtime \
-                                     else f"stuck {obs_ret_count}cycles"
-                            print(f"  [RETURN] {color.upper()} 서킷 복귀 ({reason}) → 회전 시작")
-                        else:
-                            # 정상 VFH 탐색
-                            log = _vfh_drive(ser)
-                            tag = f"VFH-OPEN {now-open_field_start:.1f}s" if in_open else "VFH"
-                            cv2.putText(vis, f"{tag} obs_cyc={obs_ret_count}/{VFH_STUCK_CYCLES}",
-                                        (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2)
-                            print(f"  [{tag}] {color.upper()} cyc={obs_ret_count} → {log}")
+                        log = _vfh_drive(ser)
+                        cv2.putText(vis, f"VFH {log}",
+                                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2)
+                        print(f"  [VFH] {color.upper()} {elapsed:.1f}s → {log}")
 
         # ── 공통 HUD ─────────────────────────────────────────────────────
         emg_txt = f" EMG:{ls['emg_near']:.0f}mm" if ls['has_data'] else ""
