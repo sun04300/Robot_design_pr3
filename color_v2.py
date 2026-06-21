@@ -31,25 +31,28 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 # ────────────────────────────────────────────────────
 
 # RED: 핑크-마젠타 계열이므로 H 155~179 + H 0~8 두 범위 합산 필수
-RED_LOWER1  = np.array([  0, 100,  80])  # 순수 빨강 (H 저주파 끝)
+RED_LOWER1  = np.array([  0, 100, 130])  # 순수 빨강 (H 저주파 끝)
 RED_UPPER1  = np.array([ 10, 255, 255])
 RED_LOWER2  = np.array([150, 100,  80])  # 핑크-마젠타 (H 고주파 끝)
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: S_min 100, V_min 120 — 먼 거리/저조도에서 더 일찍 인식
-#  Kobuki 박스(S≈60~100)는 S_min=100에서도 차단됨
-#  H_min 22: 갈색(H<20) 영역 차단 유지
-YELLOW_LOWER = np.array([ 22, 100, 120])
+# YELLOW: 종이 실측 H≈18-21, S≈90-150. 현재 바닥(핑크타일)은 H≈15, S≈51로
+#  H_min=18 + S_min=85 조합으로 이중 차단됨.
+#  이전 H_min=22 제약은 다른 환경 기준 → 현재 환경에서는 H_min=18이 안전.
+YELLOW_LOWER = np.array([ 18,  85, 100])
 YELLOW_UPPER = np.array([ 35, 255, 255])
 
-# BLUE: S_min 80→110, V_min 70→90 — Kobuki 검은 패널(S≈0~60, V≈20~60) 오탐 차단
-#  측정값: H≈115 S≈143 V≈143. H범위를 95~135로 넓혀 조명 변화 대응.
-BLUE_LOWER   = np.array([ 95, 110,  90])
-BLUE_UPPER   = np.array([135, 255, 240])
+# BLUE: Kobuki 박스(V≈104)와 파란 종이(V≈143) 구별 → V_min=120 핵심
+#  박스: H≈110, S≈138, V≈104 → V<120으로 차단
+#  종이: H≈115, S≈143, V≈143 → V>120으로 통과
+#  A4 그림자·인쇄물(V<120 또는 V>200)도 이 범위에서 자연 차단됨
+BLUE_LOWER   = np.array([ 95, 110, 120])
+BLUE_UPPER   = np.array([135, 255, 200])
 
 # 노이즈 제거용 커널
-_K5 = np.ones((5, 5), np.uint8)
-_K9 = np.ones((9, 9), np.uint8)
+_K5  = np.ones(( 5,  5), np.uint8)
+_K9  = np.ones(( 9,  9), np.uint8)
+_K15 = np.ones((15, 15), np.uint8)  # 노란 종이 CLOSE 전용
 
 
 # ────────────────────────────────────────────────────
@@ -115,7 +118,7 @@ def get_yellow_mask(hsv: np.ndarray) -> np.ndarray:
     raw2 = cv2.inRange(hsv_eq, YELLOW_LOWER, YELLOW_UPPER)  # CLAHE 보정본
     raw  = cv2.bitwise_or(raw1, raw2)
     out  = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K15)  # 9→15: 더 큰 구멍 메움
     return out
 
 
@@ -240,9 +243,11 @@ class ColorDetector:
         red_c = get_largest_contour(red_m, self.min_area)
         result['red'] = self._make_entry(red_c)
 
-        # YELLOW
+        # YELLOW — 종이는 평평하므로 볼록껍질(convex hull)로 울퉁불퉁 제거
         yel_m = get_yellow_mask(hsv)
         yel_c = get_largest_contour(yel_m, self.min_area)
+        if yel_c is not None:
+            yel_c = cv2.convexHull(yel_c)
         result['yellow'] = self._make_entry(yel_c)
 
         # BLUE
