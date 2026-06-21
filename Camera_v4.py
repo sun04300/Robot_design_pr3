@@ -66,7 +66,7 @@ AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
 AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
 CONFIRM_FRAMES    = 10     # INVISIBLE 확인용 프레임 수
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
-COLOR_MEMORY_TIME = 0.40   # 색 소실 후 조향 유지 시간 (초)
+COLOR_MEMORY_TIME = 2.00   # 색 소실 후 조향 유지 시간 (초) — 노란색 1m거리 탐지 후 0.5m 더 접근
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
 
 TARGETS = ['red', 'yellow', 'blue']
@@ -612,7 +612,7 @@ def main():
                 if elapsed < COLOR_MEMORY_TIME:
                     steer_cmd      = STEER_SMOOTH_ALPHA * last_steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
                     smoothed_steer = steer_cmd
-                    mem_speed      = _speed_limit(SPEED_NEAR * 0.7)
+                    mem_speed      = _speed_limit(SPEED_NEAR)
                     ser.write(f"F {steer_cmd:.2f} {mem_speed:.2f}\n".encode()
                               if mem_speed > 0 else b"S\n")
                     cv2.putText(vis, f"MEM {elapsed:.2f}s st={steer_cmd:+.2f}",
