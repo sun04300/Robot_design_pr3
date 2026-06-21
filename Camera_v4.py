@@ -64,7 +64,7 @@ NUDGE_SPEED       = 0.38   # 0.25 × 1.5 — 종이 위 비가시 구간 저속 
 WEAK_STEER_GAIN   = 0.60
 AREA_SLOW_THRES   = 0.12   # 근접 판단 면적비 — 카메라 높이 올림 반영 (0.20→0.12)
 AREA_PEAK_THRES   = 0.12   # area_peak_seen 세팅 면적비 — 동일 이유
-CONFIRM_FRAMES    = 25     # 비가시 구간 전진 프레임 — 깊이 확보용 (10→25, ≈0.83s)
+CONFIRM_FRAMES    = 12     # 비가시 구간 전진 프레임 — 깊이 확보용 (≈0.4s)
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
 COLOR_MEMORY_TIME = 1.50   # 마스크 정확도 향상으로 긴 메모리 불필요 (2.0→1.5)
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
@@ -421,7 +421,7 @@ def main():
     state          = 'SEEK'
     on_zone_count  = 0
     stop_start     = None
-    last_seen      = time.time()
+    last_seen      = time.time() - COLOR_MEMORY_TIME - 1.0
     last_steer     = 0.0
     smoothed_steer = 0.0
     area_peak_seen        = False
@@ -485,7 +485,7 @@ def main():
                     obs_active             = False
                     obs_clear_time         = None
                     mem_invis_count        = 0
-                    last_seen              = time.time()
+                    last_seen              = time.time() - COLOR_MEMORY_TIME - 1.0
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
                     state = 'DONE'
