@@ -1,13 +1,18 @@
 """
 [파일] color_detector.py
-[목적] 실제 경기 환경(형광등 조명)에서 촬영한 색지 샘플을 기반으로
-       RED / YELLOW / BLUE 종이를 인식하고 Double A 박스와 구별하는 모듈.
+[목적] 실제 경기 환경에서 RED / YELLOW / BLUE 종이를 인식하는 모듈.
 
-[HSV 측정값 요약 (실제 사진 기반)]
-  RED    : H mean=172.0  S mean=171.6  V mean=175.6  (핑크-마젠타 계열!)
-  YELLOW : H mean=24.4   S mean=149.4  V mean=214.5
-  BLUE   : H mean=114.9  S mean=143.3  V mean=143.0
-  BOX    : H mean=109.7  S mean=138.4  V mean=103.9  ← 종이보다 어두움
+[HSV 측정값 요약]
+  (야간 형광등)
+  RED    : H≈172  S≈172  V≈176  (핑크-마젠타 계열)
+  YELLOW : H≈24   S≈149  V≈215
+  BLUE   : H≈115  S≈143  V≈143
+  BOX    : H≈110  S≈138  V≈104  ← 종이보다 어두움
+
+  (주간 햇빛 — 전반적으로 V↑ S↓)
+  RED    : H≈172  S≈140  V≈190-220
+  YELLOW : H≈24   S≈110  V≈220-255
+  BLUE   : H≈115  S≈115  V≈160-230
 
 [파란 종이 vs 박스 구별 전략]
   1차: V(밝기) 차이 → 종이는 밝음, 박스는 어두움
@@ -30,26 +35,21 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 #  경기 당일 조명이 다르면 HSV_TUNER()로 재조정!
 # ────────────────────────────────────────────────────
 
-# RED: 핑크-마젠타 계열이므로 H 155~179 + H 0~8 두 범위 합산 필수
-# RED1: Kobuki 박스 오렌지 인쇄물(V≈130) → V_min=145로 차단. 종이 V=175.6 ✓
-RED_LOWER1  = np.array([  0, 100, 145])  # 순수 빨강 (H 저주파 끝)
+# RED: 핑크-마젠타 계열 H 150~179. 주간 햇빛에서 S↓ → S_min=100으로 완화.
+RED_LOWER1  = np.array([  0, 100, 145])  # 순수 빨강 (H 저주파 끝, 미사용)
 RED_UPPER1  = np.array([ 10, 255, 255])
-# RED2: Kobuki 박스 핑크-브라운(S≈100-115) → S_min=130으로 차단. 종이 S=171.6 ✓
-RED_LOWER2  = np.array([150, 130,  80])  # 핑크-마젠타 (H 고주파 끝)
+RED_LOWER2  = np.array([150, 115,  80])  # S_min 130→115 (간접광 채도 소폭 감소)
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: 종이 V≈214(mean). Kobuki 박스 V≈150-170 → V_min=175로 차단.
-#  CLAHE 제거: CLAHE가 박스 V=150→170~180으로 부스트해 오탐 유발. H_min=18로
-#  충분히 탐지되므로 CLAHE 불필요.
-YELLOW_LOWER = np.array([ 18,  90, 175])
+# YELLOW: 간접 자연광 유입 → S 소폭↓, V 소폭↑
+#  S_min: 90→80, V_min: 175→165
+YELLOW_LOWER = np.array([ 18,  80, 165])
 YELLOW_UPPER = np.array([ 35, 255, 255])
 
-# BLUE: Kobuki 박스(V≈104)와 파란 종이(V≈143) 구별 → V_min=120 핵심
-#  박스: H≈110, S≈138, V≈104 → V<120으로 차단
-#  종이: H≈115, S≈143, V≈143 → V>120으로 통과
-#  A4 그림자·인쇄물(V<120 또는 V>200)도 이 범위에서 자연 차단됨
-BLUE_LOWER   = np.array([ 95, 110, 120])
-BLUE_UPPER   = np.array([135, 255, 200])
+# BLUE: 간접광에서 V 소폭↑ → V_upper 200→230으로 확장이 핵심
+#  S_min: 110→100 소폭 완화
+BLUE_LOWER   = np.array([ 95, 100, 120])
+BLUE_UPPER   = np.array([135, 255, 230])
 
 # 노이즈 제거용 커널
 _K5  = np.ones(( 5,  5), np.uint8)
