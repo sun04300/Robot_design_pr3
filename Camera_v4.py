@@ -28,10 +28,10 @@ import cv2
 import numpy as np
 
 from color_v2 import (load_calibration,
-                       get_red_mask, get_yellow_mask, get_blue_mask,
-                       RED_LOWER2, RED_UPPER2,
-                       YELLOW_LOWER, YELLOW_UPPER,
-                       BLUE_LOWER, BLUE_UPPER)
+                      get_red_mask, get_yellow_mask, get_blue_mask,
+                      RED_LOWER2, RED_UPPER2,
+                      YELLOW_LOWER, YELLOW_UPPER,
+                      BLUE_LOWER, BLUE_UPPER)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,13 +42,15 @@ PORT_LIDAR = "/dev/ttyUSB0"
 CAM_INDEX  = 0
 CAM_W, CAM_H = 640, 480
 CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "camera_calibration.pkl")
+                          "camera_calibration.pkl")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  탐지 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
-MIN_AREA       = 800    # 강탐지 최소 컨투어 면적 (640×480 기준 px²)
-WEAK_MIN_AREA  = 200    # 약탐지 최소 컨투어 면적
+MIN_AREA      = 800
+WEAK_MIN_AREA = 200
+AR_MIN        = 0.5
+AR_MAX        = 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  카메라 주행 파라미터
@@ -57,20 +59,20 @@ MAX_STEER         = 1.0
 SPEED_FAR         = 0.70
 SPEED_NEAR        = 0.40
 PIVOT_SPEED       = 0.30
-WEAK_SPEED        = 0.53   # 0.35 × 1.5
-NUDGE_SPEED       = 0.38   # 0.25 × 1.5 — 종이 위 비가시 구간 저속 전진
+WEAK_SPEED        = 0.53
+NUDGE_SPEED       = 0.38
 WEAK_STEER_GAIN   = 0.60
-AREA_SLOW_THRES   = 0.12   # 근접 판단 면적비 — 카메라 높이 올림 반영 (0.20→0.12)
-AREA_PEAK_THRES   = 0.12   # area_peak_seen 세팅 면적비 — 동일 이유
-CONFIRM_FRAMES    = 12     # 비가시 구간 전진 프레임 — 깊이 확보용 (≈0.4s)
-STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
-COLOR_MEMORY_TIME = 1.50   # 마스크 정확도 향상으로 긴 메모리 불필요 (2.0→1.5)
-STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
+AREA_SLOW_THRES   = 0.12
+AREA_PEAK_THRES   = 0.12
+CONFIRM_FRAMES    = 12
+STOP_DURATION     = 1.1
+COLOR_MEMORY_TIME = 1.50
+STEER_SMOOTH_ALPHA = 0.45
 
 TARGETS = ['red', 'yellow', 'blue']
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR VFH 파라미터  (Ki+Lider_Re-Lat 기준)
+#  LiDAR VFH 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
 BIN_DEG       = 4.0
 N_BINS        = int(360 / BIN_DEG)
@@ -82,15 +84,11 @@ LID_MAX_STEER = 1.2
 ROT_THRESH    = 100.0
 ROBOT_RADIUS  = 100.0
 
-OBS_RETURN_TIME = 0.4    # 장애물 통과 후 복귀 조향 유지 시간 (s)
-OBS_RETURN_GAIN = 0.70   # 복귀 조향 계수
-
-OPEN_FIELD_TIMEOUT  = 6.0  # 사방 아무것도 없는 상태 지속 시간 → 서킷 이탈 판단 (초)
-CIRCUIT_RETURN_TIME = 2.5  # 복귀 180° 회전 시간 (초)
-
+OBS_RETURN_TIME = 10.0
+OBS_RETURN_GAIN = 0.70
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR 공유 상태  (Ki+LiDAR_v2 동일)
+#  LiDAR 공유 상태
 # ─────────────────────────────────────────────────────────────────────────────
 _lidar_lock  = threading.Lock()
 _lidar_state = {
@@ -107,7 +105,7 @@ _lidar_state = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR VFH 헬퍼  (Ki+LiDAR_v2 동일)
+#  LiDAR VFH 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_hist(scan_buf):
@@ -185,7 +183,7 @@ def _best_gap(gaps):
 
 def _compute_vfh(hist, has_pt):
     emg   = _nearest(hist, has_pt, 0.0,   arc_half=80)
-    front = _nearest(hist, has_pt, 0.0,   arc_half=30)
+    front = _nearest(hist, has_pt, 0.0,   arc_half=20)
     lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
     lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
@@ -220,7 +218,7 @@ def _compute_vfh(hist, has_pt):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR 백그라운드 스레드  (Ki+LiDAR_v2 동일)
+#  LiDAR 백그라운드 스레드
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _lidar_worker(ser_l):
@@ -289,7 +287,7 @@ def _speed_limit(cam_speed: float) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  경량 색지 탐지  (minAreaRect + distanceTransform)
+#  경량 색지 탐지
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_mask(hsv, color: str):
@@ -299,41 +297,23 @@ def _get_mask(hsv, color: str):
 
 
 def _detect_paper(hsv: np.ndarray, color: str):
-    """
-    HSV 프레임에서 색지 탐지.
-    반환: None  또는
-          {'cx','cy','area_r','contour'}
-    """
     mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     scored = [(c, cv2.contourArea(c)) for c in cnts]
     scored = [(c, a) for c, a in scored if a > MIN_AREA]
     if not scored:
         return None
-
     cnt, area = max(scored, key=lambda x: x[1])
     area_r = area / (CAM_W * CAM_H)
-
     M = cv2.moments(cnt)
     if M['m00'] == 0:
         return None
     cx = M['m10'] / M['m00']
     cy = M['m01'] / M['m00']
-
-    return {
-        'cx': cx, 'cy': cy,
-        'area_r': area_r,
-        'contour': cnt,
-    }
+    return {'cx': cx, 'cy': cy, 'area_r': area_r, 'contour': cnt}
 
 
 def _weak_detect(hsv: np.ndarray, color: str):
-    """
-    약탐지: 낮은 면적 임계값으로 종이 일부만 보여도 중심 반환.
-    반환: None 또는 (contour, cx, cy)
-    """
-    # 모폴로지 없이 raw inRange — 작은/먼 blob도 방향 탐지 가능
-    # RED1(H=0-10)은 갈색 박스 오탐 → RED2(H=150-179)만 사용
     if color == 'red':
         mask = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
     elif color == 'yellow':
@@ -390,7 +370,6 @@ def main():
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    # 캘리브레이션 로드 → undistort 맵 생성
     cam_mat, dist_coeffs, calib_res = load_calibration(CALIB_FILE)
     map1 = map2 = None
     if cam_mat is not None and calib_res == (CAM_W, CAM_H):
@@ -419,13 +398,13 @@ def main():
     signal.signal(signal.SIGTSTP, _sig)
 
     # ── 상태 변수 ────────────────────────────────────────────────────────────
-    target_idx     = 0
-    state          = 'SEEK'
-    on_zone_count  = 0
-    stop_start     = None
-    last_seen      = time.time() - COLOR_MEMORY_TIME - 1.0
-    last_steer     = 0.0
-    smoothed_steer = 0.0
+    target_idx            = 0
+    state                 = 'SEEK'
+    on_zone_count         = 0
+    stop_start            = None
+    last_seen             = time.time() - COLOR_MEMORY_TIME - 1.0
+    last_steer            = 0.0
+    smoothed_steer        = 0.0
     area_peak_seen        = False
     peak_area_r           = 0.0
     approach_steer_locked = False
@@ -435,8 +414,6 @@ def main():
     obs_active            = False
     obs_clear_time        = None
     mem_invis_count       = 0
-    open_field_start      = None
-    circuit_return_end    = None
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
@@ -449,7 +426,6 @@ def main():
             time.sleep(0.01)
             continue
 
-        # ── undistort + HSV (1회만 계산, 이후 재사용) ────────────────────
         undist = cv2.remap(raw, map1, map2, cv2.INTER_LINEAR) if map1 is not None else raw
         vis    = undist.copy()
         hsv    = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
@@ -489,8 +465,6 @@ def main():
                     obs_active             = False
                     obs_clear_time         = None
                     mem_invis_count        = 0
-                    open_field_start       = None
-                    circuit_return_end     = None
                     last_seen              = time.time() - COLOR_MEMORY_TIME - 1.0
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
@@ -504,59 +478,61 @@ def main():
 
         # ① 강탐지 ──────────────────────────────────────────────────────
         if det is not None:
-            last_seen          = time.time()
-            open_field_start   = None
-            circuit_return_end = None
+            last_seen = time.time()
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
             dcx, dcy  = int(cx), int(cy)
 
             mem_invis_count = 0
+            on_zone_count   = 0          # Bug #3: 재탐지 시 카운트 초기화
             if area_r >= AREA_PEAK_THRES:
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
-            obs_cl   = ls['has_data'] and ls['front_near'] < DETECT
-
             if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.09):
-                # CLOSE-FWD: 근접 접근
-                if obs_cl and ls['vfh_action'] != 'FWD':
-                    # 전방 장애물 + VFH 막힘 → lock 해제 후 VFH 조향으로 회피
+                # 접근 조향 고정
+                if not approach_steer_locked:
+                    locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35)) \
+                                            if prev_area_r > 0.05 else 0.0
+                    approach_steer_locked = True
+
+                ls_cl  = _lidar_read()
+                obs_cl = ls_cl['has_data'] and ls_cl['front_near'] < DETECT
+
+                if obs_cl and ls_cl['vfh_action'] != 'FWD':
                     approach_steer_locked = False
-                    steer   = float(np.clip(ls['vfh_steer'], -MAX_STEER, MAX_STEER))
+                    steer   = float(np.clip(ls_cl['vfh_steer'], -MAX_STEER, MAX_STEER))
                     speed   = _speed_limit(SPEED_NEAR)
                     log_msg = f"CLOSE-OBS(VFH) vst={steer:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"CLOSE-OBS A={area_r:.2f}",
                                 (CAM_W // 2 - 160, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 80, 255), 2)
                 else:
-                    # 정상 CLOSE-FWD: 조향 고정
-                    if not approach_steer_locked:
-                        locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35)) \
-                                                if prev_area_r > 0.05 else 0.0
-                        approach_steer_locked = True
-                    steer = locked_approach_steer
-                    speed = SPEED_NEAR if (obs_cl and ls['vfh_action'] == 'FWD') \
-                            else _speed_limit(SPEED_NEAR)
+                    steer   = locked_approach_steer
+                    speed   = SPEED_NEAR if (obs_cl and ls_cl['vfh_action'] == 'FWD') \
+                              else _speed_limit(SPEED_NEAR)
                     src     = "approach" if prev_area_r > 0.05 else "sudden"
                     log_msg = f"CLOSE-FWD(lock/{src}) st={steer:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f} lock={steer:+.2f}",
                                 (CAM_W // 2 - 180, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
-
             else:
-                # 멀리 있을 때: 장애물 확인 후 카메라 또는 VFH 조향
                 approach_steer_locked = False
                 cam_steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
 
-                if obs_cl:
-                    # 전방 500mm 이내 장애물 → VFH 조향 + VFH 속도(거리 기반 자동 감속)
-                    steer   = float(np.clip(ls['vfh_steer'], -MAX_STEER, MAX_STEER))
-                    speed   = float(np.clip(ls['vfh_speed'], 0.0, SPEED_FAR))
-                    act     = ls['vfh_action']
-                    log_msg = f"FWD-VFH({act}) vst={steer:+.2f} spd={speed:.2f} cam={offset:+.2f}"
-                    cv2.putText(vis, f"VFH({act}) spd={speed:.2f} A={area_r:.2f}",
+                ls_cur   = _lidar_read()
+                obs_near = ls_cur['has_data'] and ls_cur['front_near'] < DETECT
+
+                if obs_near:
+                    steer = float(np.clip(ls_cur['vfh_steer'], -MAX_STEER, MAX_STEER))
+                    if ls_cur['vfh_action'] == 'FWD':
+                        speed   = SPEED_NEAR
+                        log_msg = f"FWD-VFH(pass) vst={steer:+.2f} cam={offset:+.2f}"
+                    else:
+                        speed   = _speed_limit(SPEED_NEAR)
+                        log_msg = f"FWD-VFH(rot) vst={steer:+.2f} cam={offset:+.2f}"
+                    cv2.putText(vis, f"VFH({ls_cur['vfh_action']}) A={area_r:.2f}",
                                 (CAM_W // 2 - 160, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 100, 255), 2)
                 elif abs(cam_steer) < 0.4:
@@ -575,8 +551,8 @@ def main():
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
 
-            bx, by, bw, bh = cv2.boundingRect(det['contour'])
-            cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), (0, 180, 255), 2)
+            x, y, w, h = cv2.boundingRect(det['contour'])
+            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 180, 255), 2)
             _draw_ctr(vis, dcx, dcy, (0, 180, 255))
 
             smoothed_steer = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
@@ -586,8 +562,8 @@ def main():
                 ser.write(f"F {smoothed_steer:.2f} {speed:.2f}\n".encode())
                 print(f"  [SEEK] {color.upper()} {log_msg} spd={speed:.2f}")
             else:
-                # 장애물로 속도 0 → 카메라 조향 유지 + VFH 속도로 통로 통과
-                vspd = ls['vfh_speed'] if ls['has_data'] else PIVOT_SPEED
+                ls2  = _lidar_read()
+                vspd = ls2['vfh_speed'] if ls2['has_data'] else PIVOT_SPEED
                 ser.write(f"F {smoothed_steer:.2f} {vspd:.2f}\n".encode())
                 print(f"  [SEEK-PASS] {color.upper()} cam_st={smoothed_steer:+.2f} vspd={vspd:.2f}")
 
@@ -595,9 +571,9 @@ def main():
         elif area_peak_seen:
             mem_invis_count = 0
             prev_area_r = 0.0
-            wd = _weak_detect(hsv, color)
-            if wd is not None:
-                cnt_w, wcx, wcy = wd
+            w = _weak_detect(hsv, color)
+            if w is not None:
+                cnt_w, wcx, wcy = w
                 weak_offset    = _offset(wcx)
                 steer          = float(np.clip(weak_offset * WEAK_STEER_GAIN,
                                                -MAX_STEER, MAX_STEER))
@@ -612,9 +588,17 @@ def main():
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 255, 0), 2)
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
             else:
-                on_zone_count += 1
                 nudge_spd = _speed_limit(NUDGE_SPEED)
-                ser.write(f"F 0.00 {nudge_spd:.2f}\n".encode() if nudge_spd > 0 else b"S\n")
+                if nudge_spd > 0:
+                    # 전방 여유 있음 → 전진하며 카운트
+                    on_zone_count += 1
+                    ser.write(f"F 0.00 {nudge_spd:.2f}\n".encode())
+                else:
+                    # Bug #1: 장애물에 막힘 → VFH 우회, 카운트 제외
+                    if ls['has_data']:
+                        ser.write(f"F {ls['vfh_steer']:.2f} {ls['vfh_speed']:.2f}\n".encode())
+                    else:
+                        ser.write(b"S\n")
                 cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} nudge={nudge_spd:.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
                 print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count} nudge={nudge_spd:.2f}")
@@ -630,10 +614,10 @@ def main():
         else:
             prev_area_r   = 0.0
             on_zone_count = max(0, on_zone_count - 1)
-            wd = _weak_detect(hsv, color)
-            if wd is not None:
+            w = _weak_detect(hsv, color)
+            if w is not None:
                 mem_invis_count = 0
-                cnt_w, wcx, wcy = wd
+                cnt_w, wcx, wcy = w
                 weak_offset = _offset(wcx)
                 w_steer     = float(np.clip(weak_offset * 3.0, -MAX_STEER, MAX_STEER))
                 last_seen   = time.time()
@@ -676,7 +660,7 @@ def main():
                         obs_clear_time = time.time()
 
                     return_elapsed = (time.time() - obs_clear_time) \
-                        if obs_clear_time is not None else OBS_RETURN_TIME + 1.0
+                                     if obs_clear_time is not None else OBS_RETURN_TIME + 1.0
 
                     if return_elapsed < OBS_RETURN_TIME:
                         ret_st  = float(np.clip(last_obs_steer * OBS_RETURN_GAIN,
@@ -688,38 +672,11 @@ def main():
                                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 165, 255), 2)
                         print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
                     else:
+                        log = _vfh_drive(ser)
                         smoothed_steer *= (1.0 - STEER_SMOOTH_ALPHA)
-                        now     = time.time()
-                        in_open = ls['has_data'] and ls['emg_near'] >= DETECT
-
-                        if in_open:
-                            if open_field_start is None:
-                                open_field_start = now
-                        else:
-                            open_field_start = None
-
-                        if circuit_return_end is not None:
-                            if now < circuit_return_end:
-                                ser.write(f"T +1.00 {PIVOT_SPEED:.2f}\n".encode())
-                                rem = circuit_return_end - now
-                                cv2.putText(vis, f"CIRCUIT-RETURN {rem:.1f}s",
-                                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 0, 255), 2)
-                                print(f"  [RETURN] {color.upper()} 복귀 회전 {rem:.1f}s 남음")
-                            else:
-                                circuit_return_end = None
-                                open_field_start   = None
-                                smoothed_steer     = 0.0
-                        elif in_open and open_field_start is not None and \
-                                (now - open_field_start >= OPEN_FIELD_TIMEOUT):
-                            circuit_return_end = now + CIRCUIT_RETURN_TIME
-                            ser.write(f"T +1.00 {PIVOT_SPEED:.2f}\n".encode())
-                            print(f"  [RETURN] {color.upper()} 열린공간 {now-open_field_start:.1f}s → 복귀 회전 시작")
-                        else:
-                            log = _vfh_drive(ser)
-                            tag = f"VFH-OPEN {now-open_field_start:.1f}s" if in_open else "VFH"
-                            cv2.putText(vis, f"{tag}",
-                                        (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2)
-                            print(f"  [{tag}] {color.upper()} → {log}")
+                        cv2.putText(vis, f"VFH {log}",
+                                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2)
+                        print(f"  [VFH] {color.upper()} {elapsed:.1f}s → {log}")
 
         # ── 공통 HUD ─────────────────────────────────────────────────────
         emg_txt = f" EMG:{ls['emg_near']:.0f}mm" if ls['has_data'] else ""
