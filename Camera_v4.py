@@ -296,22 +296,21 @@ def _get_mask(hsv, color: str):
     return get_blue_mask(hsv)
 
 
-def _detect_paper(frame, color: str):
+def _detect_paper(hsv: np.ndarray, color: str):
     """
-    640×480 프레임에서 색지 탐지.
+    HSV 프레임에서 색지 탐지.
     반환: None  또는
           {'cx','cy','area_r','contour'}
     """
-    hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = _get_mask(hsv, color)
-
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = [c for c in cnts if cv2.contourArea(c) > MIN_AREA]
-    if not cnts:
+    scored = [(c, cv2.contourArea(c)) for c in cnts]
+    scored = [(c, a) for c, a in scored if a > MIN_AREA]
+    if not scored:
         return None
 
-    cnt    = max(cnts, key=cv2.contourArea)
-    area_r = cv2.contourArea(cnt) / (CAM_W * CAM_H)
+    cnt, area = max(scored, key=lambda x: x[1])
+    area_r = area / (CAM_W * CAM_H)
 
     M = cv2.moments(cnt)
     if M['m00'] == 0:
@@ -326,12 +325,11 @@ def _detect_paper(frame, color: str):
     }
 
 
-def _weak_detect(frame, color: str):
+def _weak_detect(hsv: np.ndarray, color: str):
     """
     약탐지: 낮은 면적 임계값으로 종이 일부만 보여도 중심 반환.
     반환: None 또는 (contour, cx, cy)
     """
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # 모폴로지 없이 raw inRange — 작은/먼 blob도 방향 탐지 가능
     if color == 'red':
         mask = cv2.bitwise_or(cv2.inRange(hsv, RED_LOWER1, RED_UPPER1),
@@ -341,11 +339,12 @@ def _weak_detect(frame, color: str):
     else:
         mask = cv2.inRange(hsv, BLUE_LOWER, BLUE_UPPER)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = [c for c in cnts if cv2.contourArea(c) > WEAK_MIN_AREA]
-    if not cnts:
+    scored = [(c, cv2.contourArea(c)) for c in cnts]
+    scored = [(c, a) for c, a in scored if a > WEAK_MIN_AREA]
+    if not scored:
         return None
-    cnt = max(cnts, key=cv2.contourArea)
-    M   = cv2.moments(cnt)
+    cnt, _ = max(scored, key=lambda x: x[1])
+    M = cv2.moments(cnt)
     if M['m00'] == 0:
         return None
     return cnt, M['m10'] / M['m00'], M['m01'] / M['m00']
@@ -387,6 +386,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
     cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     # 캘리브레이션 로드 → undistort 맵 생성
     cam_mat, dist_coeffs, calib_res = load_calibration(CALIB_FILE)
@@ -444,9 +444,10 @@ def main():
             time.sleep(0.01)
             continue
 
-        # ── undistort ────────────────────────────────────────────────────
+        # ── undistort + HSV (1회만 계산, 이후 재사용) ────────────────────
         undist = cv2.remap(raw, map1, map2, cv2.INTER_LINEAR) if map1 is not None else raw
         vis    = undist.copy()
+        hsv    = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
 
         # ── DONE ─────────────────────────────────────────────────────────
         if state == 'DONE':
@@ -456,8 +457,6 @@ def main():
             cv2.imshow('Robot View', vis)
             cv2.waitKey(1); time.sleep(0.1)
             continue
-
-        ls = _lidar_read()
 
         color = TARGETS[target_idx]
 
@@ -492,7 +491,8 @@ def main():
             continue
 
         # ── SEEK ─────────────────────────────────────────────────────────
-        det = _detect_paper(undist, color)
+        ls  = _lidar_read()
+        det = _detect_paper(hsv, color)
 
         # ① 강탐지 ──────────────────────────────────────────────────────
         if det is not None:
@@ -560,7 +560,7 @@ def main():
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
             prev_area_r = 0.0
-            w = _weak_detect(undist, color)
+            w = _weak_detect(hsv, color)
             if w is not None:
                 cnt_w, wcx, wcy = w
                 weak_offset    = _offset(wcx)
@@ -595,7 +595,7 @@ def main():
         else:
             prev_area_r   = 0.0
             on_zone_count = max(0, on_zone_count - 1)
-            w = _weak_detect(undist, color)
+            w = _weak_detect(hsv, color)
             if w is not None:
                 cnt_w, wcx, wcy = w
                 weak_offset = _offset(wcx)
