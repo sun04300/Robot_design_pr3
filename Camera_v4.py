@@ -432,6 +432,7 @@ def main():
     last_obs_steer        = 0.0
     obs_active            = False
     obs_clear_time        = None
+    strong_det_count      = 0
 
     print("=" * 60)
     print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
@@ -483,6 +484,7 @@ def main():
                     last_obs_steer         = 0.0
                     obs_active             = False
                     obs_clear_time         = None
+                    strong_det_count       = 0
                     last_seen              = time.time()
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
@@ -502,7 +504,8 @@ def main():
             offset    = _offset(cx)
             dcx, dcy  = int(cx), int(cy)
 
-            if area_r >= AREA_PEAK_THRES:
+            strong_det_count += 1
+            if area_r >= AREA_PEAK_THRES or strong_det_count >= 5:
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
@@ -559,6 +562,7 @@ def main():
 
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
+            strong_det_count = 0
             prev_area_r = 0.0
             w = _weak_detect(hsv, color)
             if w is not None:
@@ -593,6 +597,7 @@ def main():
 
         # ③ 미탐지 → VFH 탐색 ────────────────────────────────────────────
         else:
+            strong_det_count = 0
             prev_area_r   = 0.0
             on_zone_count = max(0, on_zone_count - 1)
             w = _weak_detect(hsv, color)
