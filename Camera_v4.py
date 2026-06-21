@@ -183,7 +183,7 @@ def _best_gap(gaps):
 
 def _compute_vfh(hist, has_pt):
     emg   = _nearest(hist, has_pt, 0.0,   arc_half=80)
-    front = _nearest(hist, has_pt, 0.0,   arc_half=35)
+    front = _nearest(hist, has_pt, 0.0,   arc_half=20)
     lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
     lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
@@ -556,9 +556,11 @@ def main():
                 ser.write(f"F {smoothed_steer:.2f} {speed:.2f}\n".encode())
                 print(f"  [SEEK] {color.upper()} {log_msg} spd={speed:.2f}")
             else:
-                # 장애물로 속도 0 → VFH로 회피 (area 무관)
-                vfh_log = _vfh_drive(ser)
-                print(f"  [SEEK→VFH] {color.upper()} obstacle→ {vfh_log}")
+                # 장애물로 속도 0 → 카메라 조향 유지 + VFH 속도로 통로 통과
+                ls2   = _lidar_read()
+                vspd  = ls2['vfh_speed'] if ls2['has_data'] else PIVOT_SPEED
+                ser.write(f"F {smoothed_steer:.2f} {vspd:.2f}\n".encode())
+                print(f"  [SEEK-PASS] {color.upper()} cam_st={smoothed_steer:+.2f} vspd={vspd:.2f}")
 
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
