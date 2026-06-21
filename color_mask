@@ -17,3 +17,20 @@ YELLOW_UPPER = np.array([ 35, 255, 255])
 #  측정값: H≈115 S≈143 V≈143. H범위를 95~135로 넓혀 조명 변화 대응.
 BLUE_LOWER   = np.array([ 95, 110,  90])
 BLUE_UPPER   = np.array([135, 255, 240])
+
+ver.2 (6/22)
+# RED: 핑크-마젠타 계열 H 150~179. 주간 햇빛에서 S↓ → S_min=100으로 완화.
+RED_LOWER1  = np.array([  0, 100, 145])  # 순수 빨강 (H 저주파 끝, 미사용)
+RED_UPPER1  = np.array([ 10, 255, 255])
+RED_LOWER2  = np.array([150, 115,  80])  # S_min 130→115 (간접광 채도 소폭 감소)
+RED_UPPER2  = np.array([179, 255, 255])
+
+# YELLOW: 간접 자연광 유입 → S 소폭↓, V 소폭↑
+#  S_min: 90→80, V_min: 175→165
+YELLOW_LOWER = np.array([ 18,  80, 165])
+YELLOW_UPPER = np.array([ 35, 255, 255])
+
+# BLUE: 간접광에서 V 소폭↑ → V_upper 200→230으로 확장이 핵심
+#  S_min: 110→100 소폭 완화
+BLUE_LOWER   = np.array([ 95, 100, 120])
+BLUE_UPPER   = np.array([135, 255, 230])
