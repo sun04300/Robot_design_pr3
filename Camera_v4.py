@@ -60,10 +60,11 @@ SPEED_FAR         = 0.55
 SPEED_NEAR        = 0.45
 PIVOT_SPEED       = 0.25
 WEAK_SPEED        = 0.45
+NUDGE_SPEED       = 0.25   # 종이 위 비가시 구간 저속 전진
 WEAK_STEER_GAIN   = 0.60
 AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
 AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
-CONFIRM_FRAMES    = 4      # INVISIBLE 확인용 프레임 수
+CONFIRM_FRAMES    = 2      # INVISIBLE 확인용 프레임 수
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
 COLOR_MEMORY_TIME = 0.40   # 색 소실 후 조향 유지 시간 (초)
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
@@ -456,16 +457,7 @@ def main():
             cv2.waitKey(1); time.sleep(0.1)
             continue
 
-        # ── LiDAR 긴급 후진 (SEEK 최우선) ────────────────────────────────
         ls = _lidar_read()
-        if state == 'SEEK' and ls['has_data'] and ls['emg_near'] <= EMERGENCY:
-            ser.write(b"B 0.80\n")
-            cv2.putText(vis, f"EMG BACK {ls['emg_near']:.0f}mm",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
-            cv2.imshow('Robot View', vis)
-            cv2.waitKey(1)
-            print(f"  [EMG] {ls['emg_near']:.0f}mm → 후진")
-            continue
 
         color = TARGETS[target_idx]
 
@@ -586,10 +578,11 @@ def main():
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
             else:
                 on_zone_count += 1
-                ser.write(b"S\n")
-                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES}",
+                nudge_spd = _speed_limit(NUDGE_SPEED)
+                ser.write(f"F 0.00 {nudge_spd:.2f}\n".encode() if nudge_spd > 0 else b"S\n")
+                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} nudge={nudge_spd:.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
-                print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count}")
+                print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count} nudge={nudge_spd:.2f}")
                 if on_zone_count >= CONFIRM_FRAMES:
                     state = 'STOP'; stop_start = time.time()
                     ser.write(b"S\n")
