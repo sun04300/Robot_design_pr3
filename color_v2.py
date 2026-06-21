@@ -31,15 +31,17 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 # ────────────────────────────────────────────────────
 
 # RED: 핑크-마젠타 계열이므로 H 155~179 + H 0~8 두 범위 합산 필수
-RED_LOWER1  = np.array([  0, 100, 130])  # 순수 빨강 (H 저주파 끝)
+# RED1: Kobuki 박스 오렌지 인쇄물(V≈130) → V_min=145로 차단. 종이 V=175.6 ✓
+RED_LOWER1  = np.array([  0, 100, 145])  # 순수 빨강 (H 저주파 끝)
 RED_UPPER1  = np.array([ 10, 255, 255])
-RED_LOWER2  = np.array([150, 100,  80])  # 핑크-마젠타 (H 고주파 끝)
+# RED2: Kobuki 박스 핑크-브라운(S≈100-115) → S_min=130으로 차단. 종이 S=171.6 ✓
+RED_LOWER2  = np.array([150, 130,  80])  # 핑크-마젠타 (H 고주파 끝)
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: 종이 실측 H≈18-21, S≈90-150. 현재 바닥(핑크타일)은 H≈15, S≈51로
-#  H_min=18 + S_min=85 조합으로 이중 차단됨.
-#  이전 H_min=22 제약은 다른 환경 기준 → 현재 환경에서는 H_min=18이 안전.
-YELLOW_LOWER = np.array([ 18,  85, 100])
+# YELLOW: 종이 V≈214(mean). Kobuki 박스 V≈150-170 → V_min=175로 차단.
+#  CLAHE 제거: CLAHE가 박스 V=150→170~180으로 부스트해 오탐 유발. H_min=18로
+#  충분히 탐지되므로 CLAHE 불필요.
+YELLOW_LOWER = np.array([ 18,  90, 175])
 YELLOW_UPPER = np.array([ 35, 255, 255])
 
 # BLUE: Kobuki 박스(V≈104)와 파란 종이(V≈143) 구별 → V_min=120 핵심
@@ -101,24 +103,15 @@ def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     return out
 
 
-_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
 def get_yellow_mask(hsv: np.ndarray) -> np.ndarray:
     """
     노란 종이 마스크 반환.
-    빛번짐 대응: V 채널에 CLAHE를 적용해 과포화된 밝기를 정규화한 뒤
-    기본 범위(YELLOW_LOWER/UPPER)로 검출. 정규화 전/후 마스크를 OR해
-    글레어 중심부와 외곽 모두 포착.
+    V_min=175로 Kobuki 박스(V≈150-170)를 차단. H_min=18로 종이(H≈18-21)를
+    충분히 탐지하므로 CLAHE 불필요 (CLAHE가 박스 V를 부스트해 오탐 유발).
     """
-    # CLAHE로 V채널 정규화 → 빛번짐 중심부 채도 복원
-    hsv_eq = hsv.copy()
-    hsv_eq[:, :, 2] = _CLAHE.apply(hsv[:, :, 2])
-
-    raw1 = cv2.inRange(hsv,    YELLOW_LOWER, YELLOW_UPPER)  # 원본
-    raw2 = cv2.inRange(hsv_eq, YELLOW_LOWER, YELLOW_UPPER)  # CLAHE 보정본
-    raw  = cv2.bitwise_or(raw1, raw2)
-    out  = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K15)  # 9→15: 더 큰 구멍 메움
+    raw = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K15)
     return out
 
 
