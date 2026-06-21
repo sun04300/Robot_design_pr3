@@ -33,7 +33,7 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 # RED: 핑크-마젠타 계열이므로 H 155~179 + H 0~8 두 범위 합산 필수
 RED_LOWER1  = np.array([  0, 100,  80])  # 순수 빨강 (H 저주파 끝)
 RED_UPPER1  = np.array([ 10, 255, 255])
-RED_LOWER2  = np.array([150,  70,  80])  # 핑크-마젠타 (H 고주파 끝)
+RED_LOWER2  = np.array([150, 100,  80])  # 핑크-마젠타 (H 고주파 끝)
 RED_UPPER2  = np.array([179, 255, 255])
 
 # YELLOW: S_min 100, V_min 120 — 먼 거리/저조도에서 더 일찍 인식
