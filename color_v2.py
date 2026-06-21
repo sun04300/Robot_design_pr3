@@ -92,12 +92,10 @@ def load_calibration(pkl_path: str = _DEFAULT_CALIB):
 def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     """
     빨간(핑크-마젠타) 종이 마스크 반환.
-    HSV의 H 채널 wrap-around 특성 때문에 두 범위를 OR 연산으로 합침.
+    실제 종이 H≈172 → RED2(H=150-179)만 사용.
+    RED1(H=0-10)은 갈색·오렌지 박스(H=5-15)와 겹쳐 오탐 유발 → 비활성화.
     """
-    m1  = cv2.inRange(hsv, RED_LOWER1, RED_UPPER1)
-    m2  = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
-    raw = cv2.bitwise_or(m1, m2)
-    # 모폴로지: OPEN(잡음 제거) → CLOSE(내부 구멍 메우기)
+    raw = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
     out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
     out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
     return out
