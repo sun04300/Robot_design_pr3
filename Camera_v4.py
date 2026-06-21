@@ -528,16 +528,34 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
 
             else:
-                # 멀리 있을 때: 정상 조향 업데이트 + lock 해제
+                # 멀리 있을 때: 장애물 확인 후 카메라 또는 VFH 조향
                 approach_steer_locked = False
-                steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
-                if abs(steer) < 0.4:
-                    speed   = SPEED_NEAR   # FWD-NQ: 감속 없이 접근 (EMERGENCY 200mm 하드스톱은 유지)
+                cam_steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
+
+                ls_cur   = _lidar_read()
+                obs_near = ls_cur['has_data'] and ls_cur['front_near'] < DETECT
+
+                if obs_near:
+                    # 전방 500mm 이내 장애물 → VFH 조향 우선
+                    steer = float(np.clip(ls_cur['vfh_steer'], -MAX_STEER, MAX_STEER))
+                    if ls_cur['vfh_action'] == 'FWD':
+                        speed   = SPEED_NEAR               # VFH가 통로 확인 → 속도 유지
+                        log_msg = f"FWD-VFH(pass) vst={steer:+.2f} cam={offset:+.2f}"
+                    else:
+                        speed   = _speed_limit(SPEED_NEAR) # VFH 막힘 → 감속 회피
+                        log_msg = f"FWD-VFH(rot) vst={steer:+.2f} cam={offset:+.2f}"
+                    cv2.putText(vis, f"VFH({ls_cur['vfh_action']}) A={area_r:.2f}",
+                                (CAM_W // 2 - 160, 44),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 100, 255), 2)
+                elif abs(cam_steer) < 0.4:
+                    steer   = cam_steer
+                    speed   = SPEED_NEAR
                     log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"FWD-NQ A={area_r:.2f}",
                                 (CAM_W // 2 - 140, 44),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 100), 2)
                 else:
+                    steer   = cam_steer
                     speed   = PIVOT_SPEED
                     arrow   = '→' if steer > 0 else '←'
                     log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
