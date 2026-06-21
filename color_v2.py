@@ -39,9 +39,9 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 RED_LOWER1  = np.array([  0, 165,  80])  # 미사용
 RED_UPPER1  = np.array([  7, 255, 255])  # 미사용
 # RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175).
-#  S≥130: 야간 원값. 주간 붉은 바닥(S≈70~120)은 HSV만으로 차단 한계 → solidity로 보완.
-#  V≥80: 최소 암부 노이즈 제거. (주간 바닥 V가 올라오므로 V로는 차단 불가)
-RED_LOWER2  = np.array([165, 130,  80])
+#  S≥100: 원거리 채도 희석 보완. 바닥 오탐은 solidity 필터가 담당.
+#  CLOSE(K15) 우선 적용으로 종이 표면 HSV 불균일 → 큰 픽셀 빈틈 먼저 채움.
+RED_LOWER2  = np.array([165, 100,  80])
 RED_UPPER2  = np.array([179, 255, 255])
 
 # YELLOW: H=18~32(실측 19~30).
@@ -58,8 +58,8 @@ BLUE_UPPER   = np.array([120, 255, 255])
 
 # 노이즈 제거용 커널
 _K5  = np.ones(( 5,  5), np.uint8)
-_K9  = np.ones(( 9,  9), np.uint8)
-_K15 = np.ones((15, 15), np.uint8)  # 노란 종이 CLOSE 전용
+_K7  = np.ones(( 7,  7), np.uint8)
+_K15 = np.ones((15, 15), np.uint8)
 
 
 # ────────────────────────────────────────────────────
@@ -97,11 +97,12 @@ def load_calibration(pkl_path: str = _DEFAULT_CALIB):
 def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     """
     빨간 종이 마스크 반환. RED2(H=165-179)만 사용.
-    종이 실측 H≈171~175. RED1(H=0-7)은 바닥 타일 오탐 유발로 비활성화.
+    CLOSE(K15) 선행: 종이 표면 HSV 불균일로 생긴 큰 빈틈 먼저 채움.
+    OPEN(K7) 후행: 잔여 바닥 텍스처 파편 제거 (K5보다 더 공격적).
     """
     raw = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
-    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    out = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, _K15)
+    out = cv2.morphologyEx(out, cv2.MORPH_OPEN,  _K7)
     return out
 
 
@@ -248,10 +249,12 @@ class ColorDetector:
         hsv    = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
         result = {'undistorted': undist}   # 보정 프레임도 반환 (draw_debug 에서 사용)
 
-        # RED — solidity 필터로 바닥 텍스처 오탐 차단
-        # 붉은 바닥이 HSV를 통과해도 사각형 종이(solidity≥0.55)와 형태가 다름
+        # RED — solidity 필터로 바닥 텍스처 오탐 차단 후 convexHull로 컨투어 정리
+        # CLOSE(K15)로 종이 빈틈을 채운 뒤 solidity 검사 → 불규칙 바닥 노이즈 제거
         red_m = get_red_mask(hsv)
-        red_c = get_largest_contour(red_m, self.min_area, min_solidity=0.55)
+        red_c = get_largest_contour(red_m, self.min_area, min_solidity=0.50)
+        if red_c is not None:
+            red_c = cv2.convexHull(red_c)
         result['red'] = self._make_entry(red_c)
 
         # YELLOW — 종이는 평평하므로 볼록껍질(convex hull)로 울퉁불퉁 제거
