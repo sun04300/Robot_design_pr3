@@ -57,9 +57,9 @@ AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_STEER         = 1.0
 SPEED_FAR         = 0.55
-SPEED_NEAR        = 0.35
-PIVOT_SPEED       = 0.20
-WEAK_SPEED        = 0.35
+SPEED_NEAR        = 0.45
+PIVOT_SPEED       = 0.25
+WEAK_SPEED        = 0.45
 WEAK_STEER_GAIN   = 0.60
 AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
 AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
