@@ -510,22 +510,35 @@ def main():
                 peak_area_r    = max(peak_area_r, area_r)
 
             if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.09):
-                # CLOSE-FWD: 최초 진입 시 조향 고정
-                if not approach_steer_locked:
-                    if prev_area_r > 0.05:
-                        # 멀리서 서서히 접근 → 현재 offset 기반 부드러운 보정 (누적 steer 대신)
-                        locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35))
-                    else:
-                        # 회전 중 갑자기 발견 → 직진
-                        locked_approach_steer = 0.0
-                    approach_steer_locked = True
-                steer   = locked_approach_steer
-                speed   = _speed_limit(SPEED_NEAR)
-                src     = "approach" if prev_area_r > 0.05 else "sudden"
-                log_msg = f"CLOSE-FWD(lock/{src}) st={steer:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f} lock={steer:+.2f}",
-                            (CAM_W // 2 - 180, 44),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
+                # CLOSE-FWD: 장애물 먼저 확인
+                ls_cl    = _lidar_read()
+                obs_cl   = ls_cl['has_data'] and ls_cl['front_near'] < DETECT
+
+                if obs_cl and ls_cl['vfh_action'] != 'FWD':
+                    # 전방 장애물 + VFH 막힘 → lock 해제 후 VFH 조향으로 회피
+                    approach_steer_locked = False
+                    steer   = float(np.clip(ls_cl['vfh_steer'], -MAX_STEER, MAX_STEER))
+                    speed   = _speed_limit(SPEED_NEAR)
+                    log_msg = f"CLOSE-OBS(VFH) vst={steer:+.2f} area={area_r:.2f}"
+                    cv2.putText(vis, f"CLOSE-OBS A={area_r:.2f}",
+                                (CAM_W // 2 - 160, 44),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 80, 255), 2)
+                else:
+                    # 정상 CLOSE-FWD: 조향 고정
+                    if not approach_steer_locked:
+                        if prev_area_r > 0.05:
+                            locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35))
+                        else:
+                            locked_approach_steer = 0.0
+                        approach_steer_locked = True
+                    steer = locked_approach_steer
+                    speed = SPEED_NEAR if (obs_cl and ls_cl['vfh_action'] == 'FWD') \
+                            else _speed_limit(SPEED_NEAR)
+                    src     = "approach" if prev_area_r > 0.05 else "sudden"
+                    log_msg = f"CLOSE-FWD(lock/{src}) st={steer:+.2f} area={area_r:.2f}"
+                    cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f} lock={steer:+.2f}",
+                                (CAM_W // 2 - 180, 44),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
 
             else:
                 # 멀리 있을 때: 장애물 확인 후 카메라 또는 VFH 조향
