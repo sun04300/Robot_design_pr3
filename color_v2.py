@@ -38,8 +38,9 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 # RED1: H=0~7 — 바닥 타일 오탐 유발로 비활성화 (실제 종이는 H≈171~175)
 RED_LOWER1  = np.array([  0, 165,  80])  # 미사용
 RED_UPPER1  = np.array([  7, 255, 255])  # 미사용
-# RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175). S≥80: 원거리 채도 희석 보완.
-RED_LOWER2  = np.array([165,  80,  80])
+# RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175).
+#  S≥80: 원거리 채도 희석 보완. V≥100: 어두운 나무 바닥(V≈60~90) 오탐 차단.
+RED_LOWER2  = np.array([165,  80, 100])
 RED_UPPER2  = np.array([179, 255, 255])
 
 # YELLOW: H=18~32(실측 19~30).
@@ -48,9 +49,10 @@ RED_UPPER2  = np.array([179, 255, 255])
 YELLOW_LOWER = np.array([ 18,  75, 130])
 YELLOW_UPPER = np.array([ 32, 255, 255])
 
-# BLUE: H=100~120(실측 105~118). V_min=100: 박스(V≈104)와 근접하지만
-#  H 범위가 이미 박스(H≈110갈색) 와 다르므로 실질 오탐 낮음.
-BLUE_LOWER   = np.array([100, 100, 100])
+# BLUE: H=100~120(실측 105~118).
+#  V_min=90: 음영/구겨진 파란 종이(V≈90~) 검출. 박스(V≈104)와 겹치지만
+#  실제 구분은 MIN_AREA + 최대 컨투어 선택으로 처리.
+BLUE_LOWER   = np.array([100, 100,  90])
 BLUE_UPPER   = np.array([120, 255, 255])
 
 # 노이즈 제거용 커널
@@ -115,10 +117,12 @@ def get_yellow_mask(hsv: np.ndarray) -> np.ndarray:
 
 
 def get_blue_mask(hsv: np.ndarray) -> np.ndarray:
-    """파란색 전체(종이 + 박스) 마스크 반환."""
+    """파란색 전체(종이 + 박스) 마스크 반환.
+    구겨진/조각난 마스크는 CLOSE를 먼저 적용해 연결한 뒤 OPEN으로 노이즈 제거.
+    """
     raw = cv2.inRange(hsv, BLUE_LOWER, BLUE_UPPER)
-    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    out = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, _K15)  # 조각 연결 우선
+    out = cv2.morphologyEx(out, cv2.MORPH_OPEN,  _K5)   # 잔여 노이즈 제거
     return out
 
 
