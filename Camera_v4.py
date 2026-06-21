@@ -71,12 +71,12 @@ STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
 TARGETS = ['red', 'yellow', 'blue']
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR VFH 파라미터  (Ki+LiDAR_v2 동일)
+#  LiDAR VFH 파라미터  (Ki+Lider_Re-Lat 기준)
 # ─────────────────────────────────────────────────────────────────────────────
 BIN_DEG       = 4.0
 N_BINS        = int(360 / BIN_DEG)
-GAP_MIN_PASS  = 90.0
-DETECT        = 560.0
+GAP_MIN_PASS  = 100.0
+DETECT        = 500.0
 VELO_DOWN     = 400.0
 EMERGENCY     = 200.0
 LID_MAX_STEER = 1.2
@@ -189,9 +189,6 @@ def _compute_vfh(hist, has_pt):
         return 'FWD', 0.0, 0.70, 1.0, emg, front, lL, lR
     gaps = _find_gaps(hist, has_pt)
     best = _best_gap(gaps)
-    if emg <= EMERGENCY and (best is None or not best['passable']
-                              or abs(best['center']) > ROT_THRESH):
-        return 'BACK', 0.0, 0.80, 1.0, emg, front, lL, lR
     if best is not None and best['passable'] and abs(best['center']) <= ROT_THRESH:
         imb  = (best['d_R'] - best['d_L']) / (best['d_L'] + best['d_R'] + 1e-9)
         bias = imb * (best['delta_deg'] / 2.9)
@@ -271,9 +268,6 @@ def _vfh_drive(ser):
     if not ls['has_data']:
         ser.write(f"F 0.00 {PIVOT_SPEED:.2f}\n".encode())
         return "NO_LIDAR_FWD"
-    if ls['vfh_action'] == 'BACK':
-        ser.write(b"B 0.80\n")
-        return f"VFH_BACK emg={ls['emg_near']:.0f}mm"
     ser.write(f"F {ls['vfh_steer']:.2f} {ls['vfh_speed']:.2f}\n".encode())
     return f"VFH_FWD st={ls['vfh_steer']:+.2f} spd={ls['vfh_speed']:.2f}"
 
@@ -524,8 +518,8 @@ def main():
                 # CLOSE-FWD: 최초 진입 시 조향 고정
                 if not approach_steer_locked:
                     if prev_area_r > 0.05:
-                        # 멀리서 서서히 접근 → 누적 방향 신뢰
-                        locked_approach_steer = smoothed_steer
+                        # 멀리서 서서히 접근 → 현재 offset 기반 부드러운 보정 (누적 steer 대신)
+                        locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35))
                     else:
                         # 회전 중 갑자기 발견 → 직진
                         locked_approach_steer = 0.0
@@ -541,8 +535,8 @@ def main():
             else:
                 # 멀리 있을 때: 정상 조향 업데이트 + lock 해제
                 approach_steer_locked = False
-                steer = float(np.clip(offset * 3.0, -MAX_STEER, MAX_STEER))
-                if abs(steer) < 0.5:
+                steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
+                if abs(steer) < 0.4:
                     speed   = _speed_limit(SPEED_NEAR)
                     log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
                     cv2.putText(vis, f"FWD-NQ A={area_r:.2f}",
