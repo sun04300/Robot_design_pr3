@@ -506,7 +506,7 @@ def main():
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
-            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen):
+            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.15):
                 # CLOSE-FWD: 최초 진입 시 조향 고정
                 if not approach_steer_locked:
                     if prev_area_r > 0.05:
@@ -553,22 +553,9 @@ def main():
                 ser.write(f"F {smoothed_steer:.2f} {speed:.2f}\n".encode())
                 print(f"  [SEEK] {color.upper()} {log_msg} spd={speed:.2f}")
             else:
-                if area_r >= AREA_SLOW_THRES:
-                    # 종이 바로 앞(area≥0.20) + 장애물 → 진입 카운트 증가
-                    on_zone_count += 1
-                    ser.write(b"S\n")
-                    print(f"  [SEEK-OBS] {color.upper()} {log_msg} cnt={on_zone_count}")
-                    if on_zone_count >= CONFIRM_FRAMES:
-                        state = 'STOP'; stop_start = time.time()
-                        ser.write(b"S\n")
-                        print(f"  🎯 {color.upper()} 도달(OBS)! peak={peak_area_r:.2f}")
-                        cv2.imshow('Robot View', vis)
-                        cv2.waitKey(1)
-                        continue
-                else:
-                    # 종이 원거리 + 장애물 → VFH로 회피
-                    vfh_log = _vfh_drive(ser)
-                    print(f"  [SEEK→VFH] {color.upper()} obstacle→ {vfh_log}")
+                # 장애물로 속도 0 → VFH로 회피 (area 무관)
+                vfh_log = _vfh_drive(ser)
+                print(f"  [SEEK→VFH] {color.upper()} obstacle→ {vfh_log}")
 
         # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
         elif area_peak_seen:
