@@ -39,8 +39,9 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 RED_LOWER1  = np.array([  0, 165,  80])  # 미사용
 RED_UPPER1  = np.array([  7, 255, 255])  # 미사용
 # RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175).
-#  S≥80: 원거리 채도 희석 보완. V≥100: 어두운 나무 바닥(V≈60~90) 오탐 차단.
-RED_LOWER2  = np.array([165,  80, 100])
+#  S≥130: 야간 원값. 주간 붉은 바닥(S≈70~120)은 HSV만으로 차단 한계 → solidity로 보완.
+#  V≥80: 최소 암부 노이즈 제거. (주간 바닥 V가 올라오므로 V로는 차단 불가)
+RED_LOWER2  = np.array([165, 130,  80])
 RED_UPPER2  = np.array([179, 255, 255])
 
 # YELLOW: H=18~32(실측 19~30).
@@ -130,11 +131,24 @@ def get_blue_mask(hsv: np.ndarray) -> np.ndarray:
 #  컨투어 분석 함수
 # ────────────────────────────────────────────────────
 
-def get_largest_contour(mask: np.ndarray, min_area: int = 1000):
-    """마스크에서 가장 큰 컨투어 반환. 없으면 None."""
+def get_largest_contour(mask: np.ndarray, min_area: int = 1000,
+                        min_solidity: float = 0.0) -> np.ndarray | None:
+    """마스크에서 가장 큰 컨투어 반환. 없으면 None.
+
+    min_solidity: 컨투어면적/볼록껍질면적 하한. 0이면 비활성.
+    종이(사각형)는 0.7~0.95, 바닥 텍스처 오탐은 0.2~0.5 → 0.55로 구분 가능.
+    """
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = [c for c in cnts if cv2.contourArea(c) > min_area]
-    return max(cnts, key=cv2.contourArea) if cnts else None
+    valid = []
+    for c in cnts:
+        if cv2.contourArea(c) < min_area:
+            continue
+        if min_solidity > 0:
+            hull_area = cv2.contourArea(cv2.convexHull(c))
+            if hull_area == 0 or cv2.contourArea(c) / hull_area < min_solidity:
+                continue
+        valid.append(c)
+    return max(valid, key=cv2.contourArea) if valid else None
 
 
 def contour_center(contour) -> tuple:
@@ -234,9 +248,10 @@ class ColorDetector:
         hsv    = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
         result = {'undistorted': undist}   # 보정 프레임도 반환 (draw_debug 에서 사용)
 
-        # RED
+        # RED — solidity 필터로 바닥 텍스처 오탐 차단
+        # 붉은 바닥이 HSV를 통과해도 사각형 종이(solidity≥0.55)와 형태가 다름
         red_m = get_red_mask(hsv)
-        red_c = get_largest_contour(red_m, self.min_area)
+        red_c = get_largest_contour(red_m, self.min_area, min_solidity=0.55)
         result['red'] = self._make_entry(red_c)
 
         # YELLOW — 종이는 평평하므로 볼록껍질(convex hull)로 울퉁불퉁 제거
