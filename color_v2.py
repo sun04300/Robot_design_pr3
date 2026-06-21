@@ -35,21 +35,22 @@ _DEFAULT_CALIB = os.path.join(_SCRIPT_DIR, 'camera_calibration.pkl')
 #  경기 당일 조명이 다르면 HSV_TUNER()로 재조정!
 # ────────────────────────────────────────────────────
 
-# RED: 핑크-마젠타 계열 H 150~179. 주간 햇빛에서 S↓ → S_min=100으로 완화.
-RED_LOWER1  = np.array([  0, 100, 145])  # 순수 빨강 (H 저주파 끝, 미사용)
-RED_UPPER1  = np.array([ 10, 255, 255])
-RED_LOWER2  = np.array([150, 115,  80])  # S_min 130→115 (간접광 채도 소폭 감소)
+# RED1: H=0~7 순수 빨강. S≥165로 Kobuki 박스 로고(H=8~15, S≤152) 차단.
+RED_LOWER1  = np.array([  0, 165,  80])
+RED_UPPER1  = np.array([  7, 255, 255])
+# RED2: H=165~179 핑크-마젠타 주성분(실측 H≈171~175). S≥100으로 간접광 miss 해소.
+RED_LOWER2  = np.array([165, 100,  80])
 RED_UPPER2  = np.array([179, 255, 255])
 
-# YELLOW: 간접 자연광 유입 → S 소폭↓, V 소폭↑
-#  S_min: 90→80, V_min: 175→165
-YELLOW_LOWER = np.array([ 18,  80, 165])
-YELLOW_UPPER = np.array([ 35, 255, 255])
+# YELLOW: H=18~32(실측 19~30). S≥50: 바닥 타일(S<30) 안전 차단.
+#  V≥120: 그림자 영역까지 포함. 간접광 miss(image7, S≈75) 해소.
+YELLOW_LOWER = np.array([ 18,  50, 120])
+YELLOW_UPPER = np.array([ 32, 255, 255])
 
-# BLUE: 간접광에서 V 소폭↑ → V_upper 200→230으로 확장이 핵심
-#  S_min: 110→100 소폭 완화
-BLUE_LOWER   = np.array([ 95, 100, 120])
-BLUE_UPPER   = np.array([135, 255, 230])
+# BLUE: H=100~120(실측 105~118). V_min=100: 박스(V≈104)와 근접하지만
+#  H 범위가 이미 박스(H≈110갈색) 와 다르므로 실질 오탐 낮음.
+BLUE_LOWER   = np.array([100, 100, 100])
+BLUE_UPPER   = np.array([120, 255, 255])
 
 # 노이즈 제거용 커널
 _K5  = np.ones(( 5,  5), np.uint8)
@@ -91,13 +92,14 @@ def load_calibration(pkl_path: str = _DEFAULT_CALIB):
 
 def get_red_mask(hsv: np.ndarray) -> np.ndarray:
     """
-    빨간(핑크-마젠타) 종이 마스크 반환.
-    실제 종이 H≈172 → RED2(H=150-179)만 사용.
-    RED1(H=0-10)은 갈색·오렌지 박스(H=5-15)와 겹쳐 오탐 유발 → 비활성화.
+    빨간 종이 마스크 반환. RED1(H=0-7) + RED2(H=165-179) 합산.
+    RED1 S≥165로 Kobuki 박스 로고(H=8-15, S≤152) 오탐 차단.
     """
-    raw = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
-    out = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
+    raw1 = cv2.inRange(hsv, RED_LOWER1, RED_UPPER1)
+    raw2 = cv2.inRange(hsv, RED_LOWER2, RED_UPPER2)
+    raw  = cv2.bitwise_or(raw1, raw2)
+    out  = cv2.morphologyEx(raw, cv2.MORPH_OPEN,  _K5)
+    out  = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _K9)
     return out
 
 
