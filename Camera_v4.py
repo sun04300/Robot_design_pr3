@@ -64,7 +64,7 @@ NUDGE_SPEED       = 0.25   # 종이 위 비가시 구간 저속 전진
 WEAK_STEER_GAIN   = 0.60
 AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
 AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
-CONFIRM_FRAMES    = 2      # INVISIBLE 확인용 프레임 수
+CONFIRM_FRAMES    = 10     # INVISIBLE 확인용 프레임 수
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
 COLOR_MEMORY_TIME = 0.40   # 색 소실 후 조향 유지 시간 (초)
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
@@ -187,7 +187,7 @@ def _compute_vfh(hist, has_pt):
     lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
     lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
-        return 'FWD', 0.0, 0.70, 1.0, emg, front, lL, lR
+        return 'FWD', 0.0, 0.80, 1.0, emg, front, lL, lR
     gaps = _find_gaps(hist, has_pt)
     best = _best_gap(gaps)
     if best is not None and best['passable'] and abs(best['center']) <= ROT_THRESH:
@@ -204,7 +204,7 @@ def _compute_vfh(hist, has_pt):
         rt   = min(max((VELO_DOWN - nd) / (VELO_DOWN - EMERGENCY), 0.0), 1.0)
         st   = max(-LID_MAX_STEER, min(LID_MAX_STEER,
                tgt * (1.0 + rt * 0.5) / 90.0 * LID_MAX_STEER))
-        spd  = 0.85 * (1.0 - rt * 0.55)
+        spd  = 0.92 * (1.0 - rt * 0.55)
         return 'FWD', float(st), float(spd), 1.0, emg, front, lL, lR
     FARC = 60.0
     if gaps:
@@ -506,7 +506,7 @@ def main():
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
-            if area_r >= AREA_SLOW_THRES:
+            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen):
                 # CLOSE-FWD: 최초 진입 시 조향 고정
                 if not approach_steer_locked:
                     if prev_area_r > 0.05:
