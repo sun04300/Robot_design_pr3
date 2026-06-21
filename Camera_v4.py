@@ -187,7 +187,7 @@ def _compute_vfh(hist, has_pt):
     lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
     lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
-        return 'FWD', 0.0, 0.70, 1.0, emg, front, lL, lR
+        return 'FWD', 0.0, 0.50, 1.0, emg, front, lL, lR
     gaps = _find_gaps(hist, has_pt)
     best = _best_gap(gaps)
     if best is not None and best['passable'] and abs(best['center']) <= ROT_THRESH:
@@ -204,7 +204,7 @@ def _compute_vfh(hist, has_pt):
         rt   = min(max((VELO_DOWN - nd) / (VELO_DOWN - EMERGENCY), 0.0), 1.0)
         st   = max(-LID_MAX_STEER, min(LID_MAX_STEER,
                tgt * (1.0 + rt * 0.5) / 90.0 * LID_MAX_STEER))
-        spd  = 0.85 * (1.0 - rt * 0.55)
+        spd  = 0.60 * (1.0 - rt * 0.55)
         return 'FWD', float(st), float(spd), 1.0, emg, front, lL, lR
     FARC = 60.0
     if gaps:
